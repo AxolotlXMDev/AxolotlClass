@@ -72,14 +72,19 @@ fun WeekPicker(state: AppState, selected: Int, current: Int, start: LocalDate, p
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CourseDetails(course: CourseRecord, state: AppState, week: Int, start: LocalDate, onDismiss: () -> Unit) {
+internal fun CourseDetails(selection: AppearanceSelection, state: AppState, week: Int, start: LocalDate,
+                           enabled: Boolean, onSave: (CourseAppearance, (Result<Unit>) -> Unit) -> Unit, onDismiss: () -> Unit) {
+    val course = selection.course
     var rawExpanded by remember { mutableStateOf(false) }
-    val emoji = state.snapshot?.let { state.settings.appearance(it, course).emoji }.orEmpty()
+    val appearance = state.settings.appearances["${selection.scopeKey}:${course.courseKey}"] ?: selection.appearance
+    val emoji = appearance.emoji
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(Modifier.fillMaxWidth().heightIn(max = 650.dp).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)
+        Column(Modifier.fillMaxWidth().heightIn(max = 650.dp).imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)
             .padding(bottom = 28.dp).testTag("course-details"), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text(listOf(emoji, course.name).filter(String::isNotBlank).joinToString(" "), style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold)
+            CourseAppearanceForm(course, selection.appearance, enabled, onSave)
+            HorizontalDivider()
             DetailRow("任课教师", course.teacher.ifBlank { "待定" })
             DetailRow("上课地点", course.location.ifBlank { "待定" })
             DetailRow("上课日期", "${dateOf(start, week, course.day)} · ${DAY_NAMES[course.day - 1]}")
@@ -117,7 +122,7 @@ fun ConflictPicker(courses: List<CourseRecord>, onSelect: (CourseRecord) -> Unit
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("此时段有 ${courses.size} 门课程", style = MaterialTheme.typography.titleLarge)
             courses.forEach { course ->
-                OutlinedButton(onClick = { onSelect(course) }, modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = { onSelect(course) }, modifier = Modifier.fillMaxWidth().testTag("select-conflict-${course.id}")) {
                     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                         Text(course.name, fontWeight = FontWeight.Bold)
                         Text("${course.teacher} · ${course.location}", style = MaterialTheme.typography.bodySmall)

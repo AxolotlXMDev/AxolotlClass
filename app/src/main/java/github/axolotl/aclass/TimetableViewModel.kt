@@ -83,11 +83,27 @@ class TimetableViewModel(private val repository: TimetableRepository) : ViewMode
         "节次时间已保存"
     }
 
-    fun saveAppearance(course: CourseRecord, appearance: CourseAppearance) = operation {
-        val snapshot = state.value.snapshot ?: error("请先加载课表")
-        val key = "${snapshot.scopeKey}:${course.courseKey}"
-        repository.updateSettings { it.copy(appearances = it.appearances + (key to appearance)) }
-        "课程外观已保存"
+    fun saveAppearance(scopeKey: String, course: CourseRecord, appearance: CourseAppearance,
+                       onComplete: (Result<Unit>) -> Unit) {
+        if (working.value) {
+            onComplete(Result.failure(IllegalStateException("正在处理其他操作，请稍后重试")))
+            return
+        }
+        working.value = true
+        viewModelScope.launch {
+            val result = try {
+                val key = "$scopeKey:${course.courseKey}"
+                repository.updateSettings { it.copy(appearances = it.appearances + (key to appearance)) }
+                Result.success(Unit)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Result.failure(error)
+            } finally {
+                working.value = false
+            }
+            onComplete(result)
+        }
     }
 
     fun setBackgroundTransparency(value: Float) = operation(showBusy = false) {

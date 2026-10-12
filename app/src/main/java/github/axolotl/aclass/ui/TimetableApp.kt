@@ -17,7 +17,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -58,7 +57,7 @@ private fun TimetableAppContent(model: TimetableViewModel, state: AppState) {
     val working by model.working.collectAsStateWithLifecycle()
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
     var weekPickerOpen by rememberSaveable { mutableStateOf(false) }
-    var detail by remember { mutableStateOf<CourseRecord?>(null) }
+    var detail by remember { mutableStateOf<AppearanceSelection?>(null) }
     var conflicts by remember { mutableStateOf<List<CourseRecord>>(emptyList()) }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(model) { model.events.collect { snackbar.showSnackbar(it) } }
@@ -68,6 +67,9 @@ private fun TimetableAppContent(model: TimetableViewModel, state: AppState) {
     val currentWeek = weekOf(today, start)
     val week = (selectedWeek ?: currentWeek).coerceIn(1, maxWeek)
     val periodCount = visiblePeriodCount(state)
+    fun showDetails(course: CourseRecord) {
+        state.snapshot?.let { detail = AppearanceSelection(it.scopeKey, course, state.settings.appearance(it, course)) }
+    }
 
     BackHandler(settingsOpen) { settingsOpen = false }
     Scaffold(
@@ -85,16 +87,22 @@ private fun TimetableAppContent(model: TimetableViewModel, state: AppState) {
                     onSettings = { settingsOpen = true }, onWeeks = { weekPickerOpen = true },
                     onCurrent = model::currentWeek,
                     onSelectWeek = model::selectWeek,
-                    onCourses = { courses -> if (courses.size == 1) detail = courses.first() else conflicts = courses },
+                    onCourses = { courses -> if (courses.size == 1) showDetails(courses.first()) else conflicts = courses },
                 )
             }
         }
     }
     if (weekPickerOpen) WeekPicker(state, week, currentWeek, start, periodCount,
         onSelect = { model.selectWeek(it); weekPickerOpen = false }, onDismiss = { weekPickerOpen = false })
-    detail?.let { course -> CourseDetails(course, state, week, start) { detail = null } }
+    detail?.let { selection ->
+        key(selection.scopeKey, selection.course.courseKey) {
+            CourseDetails(selection, state, week, start, !working,
+                onSave = { appearance, complete -> model.saveAppearance(selection.scopeKey, selection.course, appearance, complete) },
+                onDismiss = { detail = null })
+        }
+    }
     if (conflicts.isNotEmpty()) ConflictPicker(conflicts,
-        onSelect = { detail = it; conflicts = emptyList() }, onDismiss = { conflicts = emptyList() })
+        onSelect = { showDetails(it); conflicts = emptyList() }, onDismiss = { conflicts = emptyList() })
 }
 
 @Composable
@@ -110,7 +118,7 @@ private fun TimetableBackground(settings: AppSettings) {
     }
     bitmap?.let {
         Image(it, contentDescription = null, contentScale = ContentScale.Crop,
-            alpha = 1f - settings.backgroundTransparency, modifier = Modifier.fillMaxSize())
+            alpha = 1f - settings.backgroundTransparency, modifier = Modifier.fillMaxSize().testTag("timetable-background-image"))
     }
 }
 
@@ -134,7 +142,8 @@ fun TimetableScreen(
         snapshotFlow { pager.settledPage }.drop(1).distinctUntilChanged().collect { selectLatest(it + 1) }
     }
     Column(modifier.fillMaxSize().padding(horizontal = 3.dp)) {
-        Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().height(48.dp).background(colors.surface.copy(alpha = 0.84f), RoundedCornerShape(12.dp)),
+            verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { weekendOverride = !weekendsExpanded }, contentPadding = PaddingValues(4.dp),
                 modifier = Modifier.width(52.dp).testTag("toggle-weekend")) {
                 Text(if (weekendsExpanded) "收起" else "周末＋", fontSize = 11.sp)
@@ -163,7 +172,8 @@ private fun WeekGrid(state: AppState, week: Int, today: LocalDate, start: LocalD
     val weekCourses = remember(courses, week) { courses.filter { week in it.weeks } }
     val fontScale = LocalDensity.current.fontScale
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().height(54.dp)) {
+        Row(Modifier.fillMaxWidth().height(60.dp).padding(vertical = 3.dp)
+            .background(colors.surface.copy(alpha = 0.82f), RoundedCornerShape(10.dp))) {
             Box(Modifier.width(38.dp).fillMaxHeight(), contentAlignment = Alignment.Center) {
                 Text("${dateOf(start, week, 1).monthValue}\n月", fontSize = 11.sp, lineHeight = 14.sp,
                     color = colors.onSurfaceVariant, textAlign = TextAlign.Center)
@@ -171,16 +181,18 @@ private fun WeekGrid(state: AppState, week: Int, today: LocalDate, start: LocalD
             for (day in 1..dayCount) {
                 val date = dateOf(start, week, day)
                 val isToday = date == today
-                Column(Modifier.weight(1f).fillMaxHeight()
-                    .background(if (isToday) colors.primary.copy(alpha = 0.08f) else Color.Transparent)
+                Column(Modifier.weight(1f).fillMaxHeight().padding(horizontal = 2.dp)
+                    .clip(RoundedCornerShape(8.dp)).background(if (isToday) colors.primary else Color.Transparent)
                     .semantics { contentDescription = "${DAY_NAMES[day - 1]} ${date}${if (isToday) " 今天" else ""}" }
                     .testTag(if (isToday) "today-header" else "day-header-$day"),
                     horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                     Text(DAY_NAMES[day - 1], fontSize = 12.sp, lineHeight = 16.sp,
-                        color = if (isToday) colors.primary else colors.onSurface,
+                        color = if (isToday) colors.onPrimary else colors.onSurface,
                         fontWeight = if (isToday) FontWeight.Bold else FontWeight.Normal, maxLines = 1)
                     Text(date.format(SHORT_DATE), fontSize = 10.sp, lineHeight = 14.sp,
-                        color = if (isToday) colors.primary else colors.onSurfaceVariant, maxLines = 1)
+                        color = if (isToday) colors.onPrimary else colors.onSurfaceVariant, maxLines = 1)
+                    if (isToday) Text("今天", fontSize = 8.sp, lineHeight = 10.sp, color = colors.onPrimary,
+                        fontWeight = FontWeight.Medium, maxLines = 1)
                 }
             }
         }
@@ -188,7 +200,8 @@ private fun WeekGrid(state: AppState, week: Int, today: LocalDate, start: LocalD
             val rowHeight = maxHeight / (periodCount + 1)
             val labelScale = (rowHeight.value / 48f).coerceAtMost(1f) / fontScale.coerceAtLeast(1f)
             Row(Modifier.fillMaxSize()) {
-                Column(Modifier.width(38.dp).fillMaxHeight()) {
+                Column(Modifier.width(38.dp).fillMaxHeight()
+                    .background(colors.surface.copy(alpha = 0.78f), RoundedCornerShape(8.dp))) {
                     for (index in 0 until periodCount) {
                         val period = state.settings.periods.getOrNull(index)
                         Column(Modifier.height(rowHeight).fillMaxWidth().testTag("period-$week-${index + 1}")
@@ -210,19 +223,32 @@ private fun WeekGrid(state: AppState, week: Int, today: LocalDate, start: LocalD
                 }
                 for (day in 1..dayCount) {
                     val blocks = remember(courses, week, day, periodCount) { courseBlocks(courses, week, day, periodCount) }
+                    val isToday = dateOf(start, week, day) == today
                     Box(Modifier.weight(1f).fillMaxHeight().background(
-                        if (dateOf(start, week, day) == today) colors.primary.copy(alpha = 0.06f) else Color.Transparent)) {
+                        if (isToday) colors.primary.copy(alpha = 0.12f) else Color.Transparent)
+                        .then(if (isToday) Modifier.testTag("today-column") else Modifier)) {
                         Canvas(Modifier.matchParentSize()) {
                             for (row in 1..periodCount) drawLine(colors.outlineVariant.copy(alpha = 0.1f),
                                 androidx.compose.ui.geometry.Offset(0f, row * rowHeight.toPx()),
                                 androidx.compose.ui.geometry.Offset(size.width, row * rowHeight.toPx()))
+                            if (isToday) {
+                                val stroke = 2.dp.toPx()
+                                drawLine(colors.primary.copy(alpha = 0.7f),
+                                    androidx.compose.ui.geometry.Offset(stroke / 2, 0f),
+                                    androidx.compose.ui.geometry.Offset(stroke / 2, size.height), strokeWidth = stroke)
+                                drawLine(colors.primary.copy(alpha = 0.7f),
+                                    androidx.compose.ui.geometry.Offset(size.width - stroke / 2, 0f),
+                                    androidx.compose.ui.geometry.Offset(size.width - stroke / 2, size.height), strokeWidth = stroke)
+                            }
                         }
                         blocks.forEach { block ->
                             val course = block.courses.first()
                             val appearance = state.snapshot?.let { state.settings.appearance(it, course) } ?: CourseAppearance(COURSE_PALETTE.first())
                             CourseCard(block, appearance, rowHeight * (block.end - block.start + 1),
+                                compact = dayCount == 7,
                                 Modifier.offset(y = rowHeight * (block.start - 1))
-                                    .height(rowHeight * (block.end - block.start + 1)).fillMaxWidth().padding(1.5.dp)
+                                    .height(rowHeight * (block.end - block.start + 1)).fillMaxWidth()
+                                    .padding(if (dayCount == 7) 1.5.dp else 2.dp)
                                     .testTag("course-${course.id}-${block.start}"), onClick = { onCourses(block.courses) })
                         }
                     }
@@ -246,24 +272,27 @@ private fun WeekGrid(state: AppState, week: Int, today: LocalDate, start: LocalD
 
 @Composable
 private fun CourseCard(block: CourseBlock, appearance: CourseAppearance, height: androidx.compose.ui.unit.Dp,
-                       modifier: Modifier, onClick: () -> Unit) {
+                       compact: Boolean, modifier: Modifier, onClick: () -> Unit) {
     val base = Color(appearance.color.toInt())
-    val ink = if (base.luminance() < 0.25f) Color.White else Color(0xFF172B42)
+    val ink = courseInk(base)
     val scale = LocalDensity.current.fontScale.coerceAtLeast(1f)
     val textSize = minOf(12f, maxOf(8f, height.value / 8f)) / scale
-    Column(modifier.clip(RoundedCornerShape(6.dp)).background(base.copy(alpha = 0.75f)).clickable(onClick = onClick)
+    val compactHeight = height.value < 70
+    Column(modifier.clip(RoundedCornerShape(8.dp)).background(base.copy(alpha = COURSE_CARD_ALPHA)).clickable(onClick = onClick)
         .semantics { contentDescription = block.courses.joinToString("，") { "${it.name}，${it.location}" } }
-        .padding(horizontal = 3.dp, vertical = 4.dp), verticalArrangement = Arrangement.Center) {
+        .padding(horizontal = if (compact) 3.dp else 5.dp, vertical = if (height.value < 60) 3.dp else 7.dp)) {
         if (block.courses.size > 1) Text("${block.courses.size}门重叠", color = ink,
             fontSize = (8f / scale).sp, lineHeight = (10f / scale).sp, fontWeight = FontWeight.Bold, maxLines = 1)
-        else if (appearance.emoji.isNotBlank()) Text(appearance.emoji, fontSize = (13f / scale).sp,
+        else if (!compactHeight && appearance.emoji.isNotBlank()) Text(appearance.emoji, fontSize = (13f / scale).sp,
             lineHeight = (16f / scale).sp, maxLines = 1)
-        Text(block.courses.first().name, fontSize = textSize.sp, lineHeight = (textSize * 1.25f).sp,
+        val title = if (compactHeight && block.courses.size == 1 && appearance.emoji.isNotBlank())
+            "${appearance.emoji} ${block.courses.first().name}" else block.courses.first().name
+        Text(title, fontSize = textSize.sp, lineHeight = (textSize * 1.25f).sp,
             fontWeight = FontWeight.SemiBold, color = ink,
-            maxLines = if (block.end > block.start) 6 else 2, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false))
-        Text("@${block.courses.first().location.ifBlank { "地点待定" }}", fontSize = (9f / scale).sp,
-            lineHeight = (11f / scale).sp, color = ink, maxLines = if (height.value > 75) 3 else 1,
+            maxLines = if (block.end > block.start) 5 else 2, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f))
+        Text(block.courses.first().location.ifBlank { "地点待定" }, fontSize = (9f / scale).sp,
+            lineHeight = (11f / scale).sp, color = ink.copy(alpha = 0.85f), maxLines = if (height.value > 75) 2 else 1,
             overflow = TextOverflow.Ellipsis)
     }
 }

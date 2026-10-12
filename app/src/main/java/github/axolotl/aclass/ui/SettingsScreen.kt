@@ -12,11 +12,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -35,50 +39,45 @@ fun SettingsScreen(state: AppState, today: LocalDate, working: Boolean, model: T
     val context = LocalContext.current
     val account = state.account
     val term = state.snapshot?.term ?: account?.term ?: defaultTerm(today)
-    var studentId by remember(account?.studentId) { mutableStateOf(account?.studentId.orEmpty()) }
-    var password by remember(account?.password) { mutableStateOf(account?.password.orEmpty()) }
-    var inputTerm by remember(account?.term, state.snapshot?.term) { mutableStateOf(account?.term ?: term) }
+    var studentId by rememberSaveable(account?.studentId) { mutableStateOf(account?.studentId.orEmpty()) }
+    var password by rememberSaveable(account?.password) { mutableStateOf(account?.password.orEmpty()) }
+    var inputTerm by rememberSaveable(account?.term, state.snapshot?.term) { mutableStateOf(account?.term ?: term) }
     var passwordVisible by remember { mutableStateOf(false) }
     val start = state.settings.termStart(state.snapshot, term)
-    var startInput by remember(start) { mutableStateOf(start.toString()) }
+    var startInput by rememberSaveable(start.toString()) { mutableStateOf(start.toString()) }
     var transparency by remember(state.settings.backgroundTransparency) { mutableFloatStateOf(state.settings.backgroundTransparency) }
+    var expanded by rememberSaveable { mutableStateOf(if (!state.loading && state.snapshot == null) "account" else "") }
+    var initialized by rememberSaveable { mutableStateOf(!state.loading) }
+    LaunchedEffect(state.loading) {
+        if (!state.loading && !initialized) {
+            expanded = if (state.snapshot == null) "account" else ""
+            initialized = true
+        }
+    }
     var periodsOpen by remember { mutableStateOf(false) }
-    var appearanceCourse by remember { mutableStateOf<CourseRecord?>(null) }
+    var appearanceSelection by remember { mutableStateOf<AppearanceSelection?>(null) }
     var themeEditorOpen by remember { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) model.importBackground(context.applicationContext, uri)
     }
     val courseList = remember(state.snapshot?.courses) { state.snapshot?.courses.orEmpty().distinctBy { it.courseKey }.sortedBy { it.name } }
     val weekendCourses = remember(state.snapshot?.courses) { state.snapshot?.courses.orEmpty().filter { it.day >= 6 }.distinctBy { it.courseKey }.sortedBy { it.name } }
-    Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    val colors = MaterialTheme.colorScheme
+    Column(modifier.fillMaxSize().background(colors.background)) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack, modifier = Modifier.testTag("close-settings")) { Text("‹ 课表") }
             Text("设置", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
             if (working || state.refreshing) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
             Spacer(Modifier.width(12.dp))
         }
-        LazyColumn(Modifier.fillMaxSize().testTag("settings-list"), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            item {
-                SettingsSection("主题与取色") {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("系统莫奈取色", fontWeight = FontWeight.Medium)
-                            Text(if (android.os.Build.VERSION.SDK_INT >= 31) "跟随系统壁纸配色，适配深浅色模式" else "此系统不支持莫奈，使用自定义主题色",
-                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Switch(state.settings.useDynamicColor, onCheckedChange = model::setDynamicColor,
-                            modifier = Modifier.testTag("dynamic-color-switch"))
-                    }
-                    OutlinedButton(onClick = { themeEditorOpen = true }, modifier = Modifier.fillMaxWidth().testTag("custom-theme")) {
-                        Box(Modifier.size(18.dp).background(Color(state.settings.customPrimaryColor.toInt()), CircleShape))
-                        Spacer(Modifier.width(8.dp))
-                        Text("自定义主题色")
-                    }
-                    if (!state.settings.useDynamicColor) Text("当前使用自定义配色", style = MaterialTheme.typography.bodySmall)
-                }
+        LazyColumn(Modifier.fillMaxSize().imePadding().testTag("settings-list"), contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            item("account-header") {
+                SettingsHeader("account", "教务账号与数据", state.snapshot?.let { "${it.studentId} · ${it.term}" } ?: "登录后获取课表",
+                    expanded == "account") { expanded = if (expanded == "account") "" else "account" }
             }
-            item {
-                SettingsSection("教务账号与数据") {
+            if (expanded == "account") item("account-body") {
+                SettingsBody {
                     OutlinedTextField(studentId, { studentId = it }, label = { Text("学号") }, singleLine = true,
                         modifier = Modifier.fillMaxWidth().testTag("student-id"), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                     OutlinedTextField(password, { password = it }, label = { Text("密码") }, singleLine = true,
@@ -91,24 +90,27 @@ fun SettingsScreen(state: AppState, today: LocalDate, working: Boolean, model: T
                     Button(onClick = { model.login(studentId, password, inputTerm) }, enabled = !working && !state.loading,
                         modifier = Modifier.fillMaxWidth().testTag("login")) { Text(if (working) "正在处理…" else "登录并获取课表") }
                     HorizontalDivider()
-                    Text("最近成功刷新", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("最近成功刷新", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
                     Text(state.snapshot?.let { Instant.ofEpochMilli(it.updatedAt).atZone(SCHOOL_ZONE)
                         .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")) } ?: "尚未获取数据", style = MaterialTheme.typography.bodyMedium)
-                    state.snapshot?.let { Text("当前课表：${it.studentId} · ${it.term}", style = MaterialTheme.typography.bodySmall) }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = model::refresh, enabled = !working && account != null,
                             modifier = Modifier.weight(1f).testTag("manual-refresh")) { Text("手动刷新") }
                         TextButton(onClick = model::clearAccount, enabled = !working && account != null, modifier = Modifier.weight(1f)) { Text("清除登录信息") }
                     }
-                    Text("打开应用时自动尝试更新，失败时继续使用本地课表。", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("打开应用时自动尝试更新，失败时继续使用本地课表。", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
             }
-            item {
-                SettingsSection("学期与作息") {
+            item("schedule-header") {
+                SettingsHeader("schedule", "学期与作息", "第一周 $start · ${visiblePeriodCount(state)} 节${if (state.settings.isEstimated(state.snapshot, term)) " · 日期待校准" else ""}",
+                    expanded == "schedule") { expanded = if (expanded == "schedule") "" else "schedule" }
+            }
+            if (expanded == "schedule") item("schedule-body") {
+                SettingsBody {
                     Text(termLabel(term), style = MaterialTheme.typography.bodyMedium)
                     OutlinedTextField(startInput, { startInput = it }, label = { Text("第一周周一${if (state.settings.isEstimated(state.snapshot, term)) "（估算）" else ""}") },
-                        supportingText = { Text("YYYY-MM-DD，按学校校历校准") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        supportingText = { Text("YYYY-MM-DD，按学校校历校准") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("term-start"))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = { model.setTermStart(startInput) }, enabled = !working) { Text("保存日期") }
                         TextButton(onClick = model::resetTermStart, enabled = !working) { Text("恢复估算") }
@@ -118,73 +120,101 @@ fun SettingsScreen(state: AppState, today: LocalDate, working: Boolean, model: T
                     }
                 }
             }
-            item {
-                SettingsSection("周末课程") {
-                    Text("默认只显示周一至周五；当周有课时自动展开周末，也可在课表左上角手动展开。",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (weekendCourses.isEmpty()) Text("当前课表没有周末课程", style = MaterialTheme.typography.bodySmall)
-                    weekendCourses.forEach { course ->
-                        val key = "${state.snapshot!!.scopeKey}:${course.courseKey}"
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(course.name, fontWeight = FontWeight.Medium)
-                                Text("隐藏此课程的周末排课", style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            Switch(key in state.settings.hiddenWeekendCourses,
-                                onCheckedChange = { model.setWeekendCourseHidden(course, it) }, modifier = Modifier.testTag("hide-weekend-${course.courseKey}"))
+            item("appearance-header") {
+                SettingsHeader("appearance", "课程外观", "${courseList.size} 门课程 · 也可直接点击课表课程修改",
+                    expanded == "appearance") { expanded = if (expanded == "appearance") "" else "appearance" }
+            }
+            if (expanded == "appearance") {
+                if (courseList.isEmpty()) item("appearance-empty") {
+                    SettingsBody { Text("加载课表后即可配置课程颜色与 emoji", style = MaterialTheme.typography.bodySmall) }
+                }
+                items(courseList, key = { "appearance-${it.courseKey}" }) { course ->
+                    val snapshot = state.snapshot!!
+                    val appearance = state.settings.appearance(snapshot, course)
+                    Row(Modifier.fillMaxWidth().background(colors.surfaceContainerLow, RoundedCornerShape(14.dp))
+                        .clickable { appearanceSelection = AppearanceSelection(snapshot.scopeKey, course, appearance) }
+                        .testTag("appearance-${course.courseKey}").padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        val base = Color(appearance.color.toInt())
+                        Box(Modifier.size(42.dp).background(base.copy(alpha = COURSE_CARD_ALPHA), RoundedCornerShape(8.dp)),
+                            contentAlignment = Alignment.Center) { Text(appearance.emoji.ifBlank { "Aa" }, color = courseInk(base)) }
+                        Column(Modifier.weight(1f)) {
+                            Text(course.name, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                            Text(course.teacher.ifBlank { "教师待定" }, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                         }
+                        Text("›", color = colors.onSurfaceVariant)
                     }
                 }
             }
-            item {
-                SettingsSection("课表背景") {
-                    Text(if (state.settings.backgroundPath == null) "使用默认柔和背景" else "已设置自选图片", style = MaterialTheme.typography.bodyMedium)
+            item("weekend-header") {
+                val hiddenCount = weekendCourses.count { "${state.snapshot?.scopeKey}:${it.courseKey}" in state.settings.hiddenWeekendCourses }
+                SettingsHeader("weekend", "周末课程", "${weekendCourses.size} 门课程 · 已隐藏 $hiddenCount 门",
+                    expanded == "weekend") { expanded = if (expanded == "weekend") "" else "weekend" }
+            }
+            if (expanded == "weekend") {
+                item("weekend-info") {
+                    SettingsBody { Text(if (weekendCourses.isEmpty()) "当前课表没有周末课程" else
+                        "当周有课时自动展开周末；隐藏只影响该课程的周末排课。", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant) }
+                }
+                items(weekendCourses, key = { "weekend-${it.courseKey}" }) { course ->
+                    val hidden = "${state.snapshot!!.scopeKey}:${course.courseKey}" in state.settings.hiddenWeekendCourses
+                    Row(Modifier.fillMaxWidth().background(colors.surfaceContainerLow, RoundedCornerShape(14.dp)).padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(course.name, fontWeight = FontWeight.Medium)
+                            Text("隐藏周末排课", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                        }
+                        Switch(hidden, onCheckedChange = { model.setWeekendCourseHidden(course, it) }, modifier = Modifier.testTag("hide-weekend-${course.courseKey}"))
+                    }
+                }
+            }
+            item("theme-header") {
+                SettingsHeader("theme", "主题与取色", if (state.settings.useDynamicColor && android.os.Build.VERSION.SDK_INT >= 31) "系统莫奈取色" else "自定义主题色",
+                    expanded == "theme") { expanded = if (expanded == "theme") "" else "theme" }
+            }
+            if (expanded == "theme") item("theme-body") {
+                SettingsBody {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("系统莫奈取色", fontWeight = FontWeight.Medium)
+                            Text(if (android.os.Build.VERSION.SDK_INT >= 31) "跟随系统壁纸配色，适配深浅色模式" else "此系统不支持莫奈，使用自定义主题色",
+                                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                        }
+                        Switch(state.settings.useDynamicColor, onCheckedChange = model::setDynamicColor, modifier = Modifier.testTag("dynamic-color-switch"))
+                    }
+                    OutlinedButton(onClick = { themeEditorOpen = true }, modifier = Modifier.fillMaxWidth().testTag("custom-theme")) {
+                        Box(Modifier.size(18.dp).background(Color(state.settings.customPrimaryColor.toInt()), CircleShape))
+                        Spacer(Modifier.width(8.dp)); Text("自定义主题色")
+                    }
+                }
+            }
+            item("background-header") {
+                SettingsHeader("background", "课表背景", if (state.settings.backgroundPath == null) "默认柔和背景" else "自选图片 · 透明度 ${(state.settings.backgroundTransparency * 100).toInt()}%",
+                    expanded == "background") { expanded = if (expanded == "background") "" else "background" }
+            }
+            if (expanded == "background") item("background-body") {
+                SettingsBody {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, enabled = !working) { Text("选择图片") }
                         TextButton(onClick = model::removeBackground, enabled = !working && state.settings.backgroundPath != null) { Text("恢复默认") }
                     }
                     Text("背景透明度 ${(transparency * 100).toInt()}%", style = MaterialTheme.typography.bodyMedium)
-                    Slider(transparency, { transparency = it }, onValueChangeFinished = { model.setBackgroundTransparency(transparency) },
-                        modifier = Modifier.testTag("background-transparency"))
-                    Text("0% 完全显示图片，100% 隐藏图片", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Slider(transparency, { transparency = it }, onValueChangeFinished = { model.setBackgroundTransparency(transparency) }, modifier = Modifier.testTag("background-transparency"))
+                    Text("0% 完全显示图片，100% 隐藏图片", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
             }
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("课程颜色与 emoji", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text(if (courseList.isEmpty()) "加载课表后即可配置课程外观" else "同一课程在各周使用相同外观，刷新后保留。",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            items(courseList, key = { it.courseKey }) { course ->
-                val appearance = state.settings.appearance(state.snapshot!!, course)
-                Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(14.dp))
-                    .clickable { appearanceCourse = course }.testTag("appearance-${course.courseKey}").padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Box(Modifier.size(42.dp).background(Color(appearance.color.toInt()).copy(alpha = 0.75f), RoundedCornerShape(10.dp)),
-                        contentAlignment = Alignment.Center) { Text(appearance.emoji.ifBlank { "Aa" }) }
-                    Column(Modifier.weight(1f)) {
-                        Text(course.name, maxLines = 2, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
-                        Text(course.teacher.ifBlank { "教师待定" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Text("›")
-                }
-            }
-            item { Spacer(Modifier.height(12.dp)) }
         }
     }
     if (themeEditorOpen) ThemeColorEditor(state.settings.customPrimaryColor,
         onSave = { model.setThemeColor(it); themeEditorOpen = false }, onDismiss = { themeEditorOpen = false })
     if (periodsOpen) PeriodEditor(state.settings.periods, visiblePeriodCount(state),
         onSave = { model.savePeriods(it); periodsOpen = false }, onDismiss = { periodsOpen = false })
-    appearanceCourse?.let { course ->
-        val snapshot = state.snapshot
-        if (snapshot != null) AppearanceEditor(course, state.settings.appearance(snapshot, course),
-            onSave = { model.saveAppearance(course, it); appearanceCourse = null }, onDismiss = { appearanceCourse = null })
+    appearanceSelection?.let { selection ->
+        AppearanceEditor(selection, !working,
+            onSave = { appearance, complete -> model.saveAppearance(selection.scopeKey, selection.course, appearance, complete) },
+            onDismiss = { if (appearanceSelection === selection) appearanceSelection = null })
     }
 }
-
 @Composable
 private fun ThemeColorEditor(current: Long, onSave: (Long) -> Unit, onDismiss: () -> Unit) {
     var hex by remember { mutableStateOf("%06X".format(current and 0xFFFFFF)) }
@@ -213,10 +243,25 @@ private fun ThemeColorEditor(current: Long, onSave: (Long) -> Unit, onDismiss: (
 }
 
 @Composable
-private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface, RoundedCornerShape(18.dp)).padding(16.dp),
+private fun SettingsHeader(id: String, title: String, summary: String, expanded: Boolean, onToggle: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Row(Modifier.fillMaxWidth().background(colors.surfaceContainerLow, RoundedCornerShape(18.dp))
+        .clickable(role = Role.Button, onClickLabel = if (expanded) "收起$title" else "展开$title", onClick = onToggle)
+        .semantics { stateDescription = if (expanded) "已展开" else "已折叠" }
+        .testTag("section-$id").heightIn(min = 72.dp).padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(summary, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+        }
+        Text(if (expanded) "⌃" else "⌄", color = colors.primary)
+    }
+}
+
+@Composable
+private fun SettingsBody(content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(18.dp)).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         content()
     }
 }
@@ -243,37 +288,4 @@ private fun PeriodEditor(current: List<PeriodTime>, observedCount: Int, onSave: 
         }
     }, confirmButton = { TextButton(onClick = { error = periods.any { !validPeriodTime(it) }; if (!error) onSave(periods) }) { Text("保存") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
-}
-
-@Composable
-private fun AppearanceEditor(course: CourseRecord, current: CourseAppearance, onSave: (CourseAppearance) -> Unit, onDismiss: () -> Unit) {
-    var hex by remember { mutableStateOf("%06X".format(current.color and 0xFFFFFF)) }
-    var emoji by remember { mutableStateOf(current.emoji) }
-    var error by remember { mutableStateOf(false) }
-    val previewColor = runCatching { Color((0xFF000000L or hex.removePrefix("#").toLong(16)).toInt()) }.getOrDefault(Color(current.color.toInt()))
-    AlertDialog(onDismissRequest = onDismiss, title = { Text("课程外观") }, text = {
-        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Column(Modifier.fillMaxWidth().background(previewColor.copy(alpha = 0.75f), RoundedCornerShape(12.dp)).padding(14.dp)) {
-                Text("$emoji ${course.name}".trim(), fontWeight = FontWeight.Bold, color = Color(0xFF172B42))
-                Text(course.location, style = MaterialTheme.typography.bodySmall, color = Color(0xFF172B42))
-            }
-            COURSE_PALETTE.chunked(4).forEach { row ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    row.forEach { color ->
-                        Box(Modifier.size(44.dp).background(Color(color.toInt()), CircleShape)
-                            .border(2.dp, if (hex.equals("%06X".format(color and 0xFFFFFF), true)) MaterialTheme.colorScheme.primary else Color.Transparent, CircleShape)
-                            .clickable { hex = "%06X".format(color and 0xFFFFFF) })
-                    }
-                }
-            }
-            OutlinedTextField(hex, { hex = it; error = false }, label = { Text("颜色 HEX") }, prefix = { Text("#") }, singleLine = true)
-            OutlinedTextField(emoji, { emoji = it }, label = { Text("emoji（留空即清除）") }, singleLine = true)
-            TextButton(onClick = { emoji = "" }) { Text("清除 emoji") }
-            if (error) Text("请输入6位十六进制颜色", color = MaterialTheme.colorScheme.error)
-        }
-    }, confirmButton = { TextButton(onClick = {
-        val value = hex.removePrefix("#")
-        error = !Regex("[0-9a-fA-F]{6}").matches(value)
-        if (!error) onSave(CourseAppearance(0xFF000000L or value.toLong(16), emoji.trim()))
-    }) { Text("保存") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
 }
