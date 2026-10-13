@@ -35,9 +35,23 @@
 
 设备测试使用测试夹具，不访问真实教务账号。学校 HTTPS 连通性和当前账号数据仍需要首次登录验收。
 
-Debug APK：`app/build/outputs/apk/debug/app-debug.apk`。Release 默认启用 R8 优化，产物为未签名 APK；发布前需配置自己的签名。
+Debug APK：`app/build/outputs/apk/debug/app-debug.apk`。
 
-本次设备验收另生成了 `app/build/outputs/apk/release/app-release.apk`，使用本机开发签名，已覆盖安装并保留在设备上，大小约 2.9 MB。
+### 打包自用 Release APK
+
+```powershell
+.\gradlew.bat :app:assembleRelease --no-daemon
+```
+
+产物：`app/build/outputs/apk/release/app-release.apk`。Release 启用 R8 优化并关闭调试功能；按自用需求，自动沿用本机 Debug 密钥签名，可以覆盖安装相同包名、相同签名且版本号不高于此包的现有应用，保留账号、课表和设置。
+
+优化配置：AGP 9.3.1 的 `optimization.enable = true` 同时启用代码缩减、优化、混淆和资源优化，默认作用于应用及依赖的全部包，并自动使用 `proguard-android-optimize.txt`。`gradle.properties` 显式开启 R8 全模式、严格 keep 规则模式与优化资源压缩。这些也是当前 AGP 的默认值，显式配置用于说明并固定项目意图。Debug 仍保留调试用途。
+
+混淆映射及压缩报告位于 `app/build/outputs/mapping/release/`；保存每次分发版本对应的 `mapping.txt`，便于还原崩溃堆栈。
+
+Android Studio 中也可在 Build Variants 将 `app` 切换为 `release`，再生成 APK。
+
+签名密钥默认位于用户目录的 `.android/debug.keystore`，不提交到仓库。请保留该文件，换电脑时需要安全迁移同一密钥才能继续覆盖升级；新生成的 Debug 密钥与原密钥签名不同。此配置用于个人安装，若以后需要正式上架，应另行配置专用发布密钥；更换签名通常无法直接覆盖现有安装，卸载会清除本地数据。
 
 ## 初版验收结果（2026-10-12）
 

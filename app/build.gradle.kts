@@ -21,7 +21,10 @@ android {
 
     buildTypes {
         release {
+            // Personal-use release: keep the same certificate as existing debug installs.
+            signingConfig = signingConfigs.getByName("debug")
             optimization {
+                // AGP 9.3 enables code shrinking, obfuscation, and resource optimization together.
                 enable = true
             }
         }
