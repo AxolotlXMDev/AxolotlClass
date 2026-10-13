@@ -39,20 +39,41 @@ class TimetableViewModelTest {
         try { block(model) } finally { store.clear(); repository.close() }
     }
 
-    @Test fun savePublishesOnlyAfterPersistenceAndRejectsDuplicateSubmission() = modelTest { model ->
+    @Test fun gestureSettlementsDoNotNavigateAndCannotOverwriteNewerRequests() = modelTest { model ->
+        runCurrent()
+        val initialNavigation = model.weekNavigationId.value
+        model.settleWeek(2, initialNavigation)
+        model.settleWeek(3, initialNavigation)
+        assertEquals(3, model.selectedWeek.value)
+        assertEquals(initialNavigation, model.weekNavigationId.value)
+
+        model.selectWeek(8)
+        val requestedNavigation = model.weekNavigationId.value
+        model.settleWeek(4, initialNavigation)
+        assertEquals(8, model.selectedWeek.value)
+        model.settleWeek(6, requestedNavigation) // a gesture interrupts the request
+        assertEquals(6, model.selectedWeek.value)
+        assertEquals(requestedNavigation, model.weekNavigationId.value)
+
+        model.selectWeek(6) // the same week is still a new request with its own acknowledgement
+        assertTrue(model.weekNavigationId.value > requestedNavigation)
+        model.settleWeek(7, requestedNavigation)
+        assertEquals(6, model.selectedWeek.value)
+    }
+
+    @Test fun autoSaveDebouncesLatestAppearanceAndDoesNotBlockEditing() = modelTest { model ->
         runCurrent()
         val snapshot = repository.state.value.snapshot!!
         val appearance = CourseAppearance(0xFF18304AL, "🧑‍💻")
-        var first: Result<Unit>? = null
-        var duplicate: Result<Unit>? = null
-        model.saveAppearance(snapshot.scopeKey, snapshot.courses.first(), appearance) { first = it }
-        model.saveAppearance(snapshot.scopeKey, snapshot.courses.first(), CourseAppearance(0xFFAABBCCL)) { duplicate = it }
-        assertTrue(model.working.value)
-        assertNull(first)
-        assertTrue(duplicate!!.isFailure)
+        val draft = model.appearanceDraft(snapshot.scopeKey, snapshot.courses.first(), AppSettings().appearance(snapshot, snapshot.courses.first()))
+        draft.change(CourseAppearance(0xFFAABBCCL))
+        advanceTimeBy(200)
+        draft.change(appearance)
+        advanceTimeBy(399)
+        assertFalse(model.working.value)
         assertTrue(repository.state.value.settings.appearances.isEmpty())
+        advanceTimeBy(1)
         runCurrent()
-        assertTrue(first!!.isSuccess)
         assertFalse(model.working.value)
         assertEquals(1, storage.saves)
         assertEquals(appearance, storage.settings.appearances.values.single())
@@ -64,17 +85,19 @@ class TimetableViewModelTest {
         val snapshot = repository.state.value.snapshot!!
         val appearance = CourseAppearance(0xFFAABBCCL, "")
         storage.failSave = true
-        var result: Result<Unit>? = null
-        model.saveAppearance(snapshot.scopeKey, snapshot.courses.first(), appearance) { result = it }
+        val draft = model.appearanceDraft(snapshot.scopeKey, snapshot.courses.first(), AppSettings().appearance(snapshot, snapshot.courses.first()))
+        draft.attach()
+        draft.change(appearance, immediate = true)
         runCurrent()
-        assertEquals("磁盘写入失败", result!!.exceptionOrNull()!!.message)
+        assertEquals("磁盘写入失败", draft.state.value.error)
+        assertTrue(draft.state.value.canRetry)
         assertTrue(repository.state.value.settings.appearances.isEmpty())
         assertTrue(storage.settings.appearances.isEmpty())
         assertFalse(model.working.value)
         storage.failSave = false
-        model.saveAppearance(snapshot.scopeKey, snapshot.courses.first(), appearance) { result = it }
+        draft.retry()
         runCurrent()
-        assertTrue(result!!.isSuccess)
+        assertNull(draft.state.value.error)
         assertEquals(appearance, repository.state.value.settings.appearances.values.single())
     }
 
@@ -83,10 +106,8 @@ class TimetableViewModelTest {
         val opened = repository.state.value.snapshot!!
         assertEquals(RefreshResult.Success, repository.refresh(AccountSettings("other", "password", "202602")))
         val appearance = CourseAppearance(0xFF18304AL, "🌐")
-        var result: Result<Unit>? = null
-        model.saveAppearance(opened.scopeKey, opened.courses.first(), appearance) { result = it }
+        model.appearanceDraft(opened.scopeKey, opened.courses.first(), AppSettings().appearance(opened, opened.courses.first())).change(appearance, immediate = true)
         runCurrent()
-        assertTrue(result!!.isSuccess)
         assertEquals(setOf("${opened.scopeKey}:${opened.courses.first().courseKey}"), storage.settings.appearances.keys)
         assertEquals("other:202602", repository.state.value.snapshot!!.scopeKey)
     }
@@ -148,28 +169,76 @@ class TimetableViewModelTest {
 
     @Test fun highlightMinutesValidatePersistAndKeepOldValueOnFailure() = modelTest { model ->
         runCurrent()
-        val saved = async { model.events.first() }
-        model.setHighlightMinutes("25")
+        val draft = model.highlightDraft()
+        draft.attach()
+        draft.change("25", immediate = true)
         runCurrent()
-        assertEquals("高亮时长已保存", saved.await())
         assertEquals(25, storage.settings.highlightMinutes)
         storage.failSave = true
-        val failed = async { model.events.first() }
-        model.setHighlightMinutes("30")
+        draft.change("30", immediate = true)
         runCurrent()
-        assertEquals("磁盘写入失败", failed.await())
+        assertEquals("磁盘写入失败", draft.state.value.error)
         assertEquals(25, repository.state.value.settings.highlightMinutes)
         storage.failSave = false
-        val retried = async { model.events.first() }
-        model.setHighlightMinutes("0")
+        draft.change("0", immediate = true)
         runCurrent()
-        assertEquals("高亮时长已保存", retried.await())
+        assertNull(draft.state.value.error)
         assertEquals(0, storage.settings.highlightMinutes)
-        val invalid = async { model.events.first() }
-        model.setHighlightMinutes("61")
+        draft.change("61", immediate = true)
         runCurrent()
-        assertEquals("请输入 0～60 的整数分钟", invalid.await())
+        assertEquals("请输入 0～60 的整数分钟", draft.state.value.error)
         assertEquals(0, repository.state.value.settings.highlightMinutes)
+    }
+
+    @Test fun backgroundFlushesAllValidDraftsAndDoesNotPublishInvalidSettings() = modelTest { model ->
+        runCurrent()
+        val snapshot = repository.state.value.snapshot!!
+        val date = model.termStartDraft(snapshot.scopeKey, "2026-10-12")
+        val theme = model.themeDraft()
+        val periods = model.periodsDraft(10)
+        model.working.value = true
+        date.change("2026-10-19")
+        theme.change("18304A")
+        model.highlightDraft().change("25")
+        periods.change(DEFAULT_PERIODS.toMutableList().apply { set(0, PeriodTime("08:05", "08:45")) })
+        model.onBackground()
+        runCurrent()
+        assertEquals("2026-10-19", storage.settings.termStarts[snapshot.scopeKey])
+        assertEquals(0xFF18304AL, storage.settings.customPrimaryColor)
+        assertFalse(storage.settings.useDynamicColor)
+        assertEquals(25, storage.settings.highlightMinutes)
+        assertEquals("08:05", storage.settings.periods.first().start)
+        val reopened = TimetableRepository(storage, object : SchoolGateway {
+            override suspend fun fetch(account: AccountSettings) = error("离线重建不应请求网络")
+        }, dispatcher)
+        runCurrent()
+        assertEquals(storage.settings, reopened.state.value.settings)
+        reopened.close()
+        date.change("2026-10-20")
+        theme.change("invalid")
+        periods.change(DEFAULT_PERIODS.toMutableList().apply { set(0, PeriodTime("09:00", "08:00")) })
+        model.flushAutoSaves()
+        advanceTimeBy(400)
+        runCurrent()
+        assertEquals("2026-10-19", storage.settings.termStarts[snapshot.scopeKey])
+        assertEquals(0xFF18304AL, storage.settings.customPrimaryColor)
+        assertEquals("08:05", storage.settings.periods.first().start)
+        assertNotNull(date.state.value.error)
+        assertNotNull(theme.state.value.error)
+        assertNotNull(periods.state.value.error)
+    }
+
+    @Test fun restoredDateCancelsPendingEditAndDoesNotReappearOnReentry() = modelTest { model ->
+        runCurrent()
+        val snapshot = repository.state.value.snapshot!!
+        val date = model.termStartDraft(snapshot.scopeKey, "2026-10-12")
+        date.change("2026-10-19")
+        model.resetTermStart()
+        runCurrent()
+        advanceTimeBy(400)
+        runCurrent()
+        assertFalse(storage.settings.termStarts.containsKey(snapshot.scopeKey))
+        assertEquals(estimateTermStart(snapshot.term).toString(), date.state.value.value)
     }
 
     private class MutableClock(var value: Instant) : Clock() {

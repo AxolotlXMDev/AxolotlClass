@@ -3,9 +3,13 @@ package github.axolotl.aclass.ui
 import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.ReportDrawnWhen
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -34,8 +38,10 @@ import github.axolotl.aclass.TimetableViewModel
 import github.axolotl.aclass.data.*
 import github.axolotl.aclass.ui.theme.AxolotlClassTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.distinctUntilChanged
 import java.time.LocalDate
 import java.time.Instant
@@ -57,6 +63,7 @@ fun TimetableApp(model: TimetableViewModel) {
 @Composable
 private fun TimetableAppContent(model: TimetableViewModel, state: AppState) {
     val selectedWeek by model.selectedWeek.collectAsStateWithLifecycle()
+    val weekNavigationId by model.weekNavigationId.collectAsStateWithLifecycle()
     val today by model.today.collectAsStateWithLifecycle()
     val now by model.now.collectAsStateWithLifecycle()
     val working by model.working.collectAsStateWithLifecycle()
@@ -66,6 +73,11 @@ private fun TimetableAppContent(model: TimetableViewModel, state: AppState) {
     var conflicts by remember { mutableStateOf<List<CourseRecord>>(emptyList()) }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(model) { model.events.collect { snackbar.showSnackbar(it) } }
+    LaunchedEffect(model, snackbar) {
+        model.autoSaveFailures.collect { failure ->
+            if (snackbar.showSnackbar(failure.message, actionLabel = "重试") == SnackbarResult.ActionPerformed) failure.retry()
+        }
+    }
     val term = state.snapshot?.term ?: state.account?.term ?: defaultTerm(today)
     val start = state.settings.termStart(state.snapshot, term)
     val maxWeek = state.snapshot?.maxWeek ?: 20
@@ -98,6 +110,7 @@ private fun TimetableAppContent(model: TimetableViewModel, state: AppState) {
                     onSettings = { settingsOpen = true }, onWeeks = { weekPickerOpen = true },
                     onCurrent = model::currentWeek,
                     onSelectWeek = model::selectWeek,
+                    weekNavigationId = weekNavigationId, onWeekSettled = model::settleWeek,
                     onCourses = { courses -> if (courses.size == 1) showDetails(courses.first()) else conflicts = courses },
                     nextCourses = nextCourses, now = now,
                 )
@@ -108,8 +121,7 @@ private fun TimetableAppContent(model: TimetableViewModel, state: AppState) {
         onSelect = { model.selectWeek(it); weekPickerOpen = false }, onDismiss = { weekPickerOpen = false })
     detail?.let { selection ->
         key(selection.scopeKey, selection.course.courseKey) {
-            CourseDetails(selection, state, week, start, !working,
-                onSave = { appearance, complete -> model.saveAppearance(selection.scopeKey, selection.course, appearance, complete) },
+            CourseDetails(selection, state, week, start, model,
                 onDismiss = { detail = null })
         }
     }
@@ -140,31 +152,39 @@ fun TimetableScreen(
     modifier: Modifier = Modifier,
     onSettings: () -> Unit, onWeeks: () -> Unit, onCurrent: () -> Unit,
     onSelectWeek: (Int) -> Unit, onCourses: (List<CourseRecord>) -> Unit,
+    weekNavigationId: Long, onWeekSettled: (Int, Long) -> Unit,
     nextCourses: List<CourseOccurrence> = emptyList(), now: Instant = Instant.EPOCH,
 ) {
     val colors = MaterialTheme.colorScheme
     val maxWeek = state.snapshot?.maxWeek ?: 20
     var weekendOverrideWeek by rememberSaveable { mutableStateOf(week) }
     var weekendOverride by rememberSaveable { mutableStateOf<Boolean?>(null) }
-    val weekendsExpanded = weekendOverride.takeIf { weekendOverrideWeek == week } ?: hasWeekendCourses(state, week)
     val pager = rememberPagerState(initialPage = week - 1, pageCount = { maxWeek })
-    LaunchedEffect(week, maxWeek) {
-        if (pager.currentPage != week - 1) pager.scrollToPage(week - 1)
-    }
-    val selectLatest by rememberUpdatedState(onSelectWeek)
-    LaunchedEffect(pager) {
-        snapshotFlow { pager.settledPage }.drop(1).distinctUntilChanged().collect { selectLatest(it + 1) }
+    val selectedWeekLatest by rememberUpdatedState(week)
+    val settleLatest by rememberUpdatedState(onWeekSettled)
+    LaunchedEffect(pager, weekNavigationId, start, currentWeek, maxWeek) {
+        val target = (week - 1).coerceIn(0, maxWeek - 1)
+        try {
+            if (pager.currentPage != target || pager.currentPageOffsetFraction != 0f) {
+                pager.animateScrollToPage(target, animationSpec = tween(300, easing = FastOutSlowInEasing))
+            }
+        } catch (_: CancellationException) {
+            // A drag can interrupt the scroll; a newer request cancels this observer as well.
+            currentCoroutineContext().ensureActive()
+        }
+        snapshotFlow { pager.isScrollInProgress to pager.settledPage }.distinctUntilChanged().collect { (scrolling, page) ->
+            if (!scrolling && page + 1 != selectedWeekLatest) settleLatest(page + 1, weekNavigationId)
+        }
     }
     Column(modifier.fillMaxSize().padding(horizontal = 3.dp)) {
         Row(Modifier.fillMaxWidth().height(48.dp).background(colors.surface.copy(alpha = state.settings.mainUiOpacity), RoundedCornerShape(12.dp)),
             verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { weekendOverrideWeek = week; weekendOverride = !weekendsExpanded }, contentPadding = PaddingValues(4.dp),
-                modifier = Modifier.width(52.dp).testTag("toggle-weekend")) {
-                Text(if (weekendsExpanded) "收起" else "周末＋", fontSize = 11.sp)
+            WeekendToggle(pager, state, weekendOverrideWeek, weekendOverride) { visibleWeek, expanded ->
+                weekendOverrideWeek = visibleWeek
+                weekendOverride = expanded
             }
             Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                Text("第 $week 周 ⌄", style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.clickable(onClick = onWeeks).testTag("week-title").padding(horizontal = 12.dp, vertical = 8.dp))
+                WeekTitle(pager, onWeeks)
             }
             IconButton(onClick = onSettings, modifier = Modifier.testTag("open-settings").semantics { contentDescription = "设置" }) {
                 Text("⚙", fontSize = 22.sp, color = colors.primary)
@@ -178,9 +198,45 @@ fun TimetableScreen(
         }
         HorizontalPager(state = pager, modifier = Modifier.weight(1f).fillMaxWidth().testTag("week-pager"),
             key = { it }, verticalAlignment = Alignment.Top) { page ->
-            val expanded = if (page + 1 == week) weekendsExpanded else hasWeekendCourses(state, page + 1)
+            val expanded = weekendOverride.takeIf { weekendOverrideWeek == page + 1 } ?: hasWeekendCourses(state, page + 1)
             WeekGrid(state, page + 1, today, start, periodCount, if (expanded) 7 else 5, onCourses, onSettings, nextCourses, now)
         }
+    }
+}
+
+@Composable
+private fun WeekTitle(pager: PagerState, onClick: () -> Unit) {
+    val dragging by pager.interactionSource.collectIsDraggedAsState()
+    val thresholdPixels = with(LocalDensity.current) { 56.dp.toPx() }
+    val page by remember(pager, thresholdPixels) {
+        derivedStateOf {
+            if (dragging) {
+                // An interrupted fling can leave targetPage pointing at its old destination.
+                // While the finger is down, use the live offset and direction instead.
+                val threshold = (thresholdPixels / pager.layoutInfo.pageSize.coerceAtLeast(1)).coerceAtMost(0.5f)
+                val offset = pager.currentPageOffsetFraction
+                val next = when {
+                    offset >= threshold && pager.lastScrolledForward -> pager.currentPage + 1
+                    offset <= -threshold && pager.lastScrolledBackward -> pager.currentPage - 1
+                    else -> pager.currentPage
+                }
+                next.coerceIn(0, (pager.pageCount - 1).coerceAtLeast(0))
+            } else pager.targetPage
+        }
+    }
+    // Keep pager observations in this small scope instead of recomposing the timetable grids.
+    Text("第 ${page + 1} 周 ⌄", style = MaterialTheme.typography.titleLarge,
+        modifier = Modifier.clickable(onClick = onClick).testTag("week-title").padding(horizontal = 12.dp, vertical = 8.dp))
+}
+
+@Composable
+private fun WeekendToggle(pager: PagerState, state: AppState, overrideWeek: Int, override: Boolean?,
+                          onToggle: (Int, Boolean) -> Unit) {
+    val week = pager.currentPage + 1
+    val expanded = override.takeIf { overrideWeek == week } ?: hasWeekendCourses(state, week)
+    TextButton(onClick = { onToggle(week, !expanded) }, contentPadding = PaddingValues(4.dp),
+        modifier = Modifier.width(52.dp).testTag("toggle-weekend")) {
+        Text(if (expanded) "收起" else "周末＋", fontSize = 11.sp)
     }
 }
 

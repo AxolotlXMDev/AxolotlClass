@@ -121,14 +121,14 @@ class TimetableUiTest {
         compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("appearance-code:计算机网络"))
         compose.onNodeWithTag("appearance-code:计算机网络").performClick()
         compose.onNodeWithTag("appearance-emoji").performScrollTo().performTextInput("🌐")
-        compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
         compose.waitUntil(5000) { repository!!.state.value.settings.appearances.values.any { it.emoji == "🌐" } }
         assertEquals("🌐", repository!!.state.value.settings.appearances.values.single().emoji)
+        compose.onNodeWithText("关闭").performClick()
         expandSection("schedule")
         compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("edit-periods"))
         compose.onNodeWithTag("edit-periods").performClick()
         compose.onAllNodesWithText("开始")[0].performTextReplacement("08:05")
-        compose.onNodeWithText("保存").performClick()
+        compose.onNodeWithText("关闭").performClick()
         compose.waitUntil(5000) { repository!!.state.value.settings.periods.first().start == "08:05" }
     }
 
@@ -196,6 +196,184 @@ class TimetableUiTest {
         compose.onNodeWithTag("day-header-6").assertDoesNotExist()
     }
 
+    @Test fun weekTitleFollowsHeldDragAndReversalBeforeSettling() {
+        val snapshot = sampleSnapshot()
+        launch(snapshot, settings = AppSettings(termStarts = mapOf(snapshot.scopeKey to "2026-10-12")),
+            clock = Clock.fixed(Instant.parse("2026-10-12T00:00:00Z"), SCHOOL_ZONE))
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.onNodeWithTag("week-pager").performTouchInput {
+                down(androidx.compose.ui.geometry.Offset(width * 0.9f, centerY))
+                moveTo(androidx.compose.ui.geometry.Offset(width * 0.2f, centerY), delayMillis = 160)
+            }
+            compose.mainClock.advanceTimeBy(32)
+            compose.onNodeWithTag("week-title").assertTextContains("第 2 周", substring = true)
+            assertNull("The selected week must wait for the gesture to settle", model!!.selectedWeek.value)
+            compose.onNodeWithTag("week-pager").performTouchInput {
+                moveTo(androidx.compose.ui.geometry.Offset(width * 0.8f, centerY), delayMillis = 160)
+            }
+            compose.mainClock.advanceTimeBy(32)
+            compose.onNodeWithTag("week-title").assertTextContains("第 1 周", substring = true)
+            assertNull(model!!.selectedWeek.value)
+            compose.onNodeWithTag("week-pager").performTouchInput {
+                moveTo(androidx.compose.ui.geometry.Offset(width * 0.2f, centerY), delayMillis = 160)
+                advanceEventTime(300)
+                up()
+            }
+        } finally { compose.mainClock.autoAdvance = true }
+        compose.waitForIdle()
+        compose.waitUntil(5000) { model!!.selectedWeek.value == 2 }
+        compose.onNodeWithTag("week-title").assertTextContains("第 2 周", substring = true)
+        compose.onNodeWithTag("period-2-end").assertIsDisplayed()
+    }
+
+    @Test fun requestedWeeksSlideAndRapidRequestsKeepLastTarget() {
+        val snapshot = sampleSnapshot()
+        launch(snapshot, settings = AppSettings(termStarts = mapOf(snapshot.scopeKey to "2026-10-12")),
+            clock = Clock.fixed(Instant.parse("2026-10-12T00:00:00Z"), SCHOOL_ZONE))
+        val initialX = compose.onNodeWithTag("period-1-1").fetchSemanticsNode().positionInRoot.x
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.runOnIdle { model!!.selectWeek(2) }
+            compose.mainClock.advanceTimeBy(128)
+            val movingX = compose.onNodeWithTag("period-1-1").fetchSemanticsNode().positionInRoot.x
+            assertTrue("Week selection must slide before settling", movingX < initialX - 1f)
+            compose.runOnIdle { model!!.selectWeek(5) }
+            compose.mainClock.advanceTimeBy(64)
+            compose.runOnIdle { model!!.selectWeek(3) }
+        } finally { compose.mainClock.autoAdvance = true }
+        compose.waitForIdle()
+        assertEquals(3, model!!.selectedWeek.value)
+        compose.onNodeWithTag("week-title").assertTextContains("第 3 周", substring = true)
+        compose.onNodeWithTag("period-3-end").assertIsDisplayed()
+        compose.onNodeWithTag("week-pager").performTouchInput { swipeRight() }
+        compose.waitUntil(5000) { model!!.selectedWeek.value == 2 }
+    }
+
+    @Test fun rapidRepeatedSwipesAndReversalUpdateTitleWithoutWaitingForSettlement() {
+        val snapshot = sampleSnapshot()
+        launch(snapshot, settings = AppSettings(termStarts = mapOf(snapshot.scopeKey to "2026-10-12")),
+            clock = Clock.fixed(Instant.parse("2026-10-12T00:00:00Z"), SCHOOL_ZONE))
+        compose.mainClock.autoAdvance = false
+        try {
+            for (week in 2..4) {
+                compose.onNodeWithTag("week-pager").performTouchInput {
+                    down(androidx.compose.ui.geometry.Offset(width * 0.9f, centerY))
+                    for (fraction in listOf(0.7f, 0.5f, 0.3f, 0.1f)) {
+                        moveTo(androidx.compose.ui.geometry.Offset(width * fraction, centerY), delayMillis = 16)
+                    }
+                }
+                compose.mainClock.advanceTimeBy(32)
+                compose.onNodeWithTag("week-title").assertTextContains("第 $week 周", substring = true)
+                assertNull("Repeated drags must update the title before any settlement", model!!.selectedWeek.value)
+                compose.onNodeWithTag("week-pager").performTouchInput { up() }
+                compose.mainClock.advanceTimeBy(16) // interrupt the fling with the next gesture
+            }
+            compose.onNodeWithTag("week-pager").performTouchInput {
+                down(androidx.compose.ui.geometry.Offset(width * 0.1f, centerY))
+                for (fraction in listOf(0.3f, 0.5f, 0.7f, 0.9f)) {
+                    moveTo(androidx.compose.ui.geometry.Offset(width * fraction, centerY), delayMillis = 16)
+                }
+            }
+            compose.mainClock.advanceTimeBy(32)
+            compose.onNodeWithTag("week-title").assertTextContains("第 2 周", substring = true)
+            assertNull(model!!.selectedWeek.value)
+            compose.onNodeWithTag("week-pager").performTouchInput { up() }
+        } finally { compose.mainClock.autoAdvance = true }
+        compose.waitForIdle()
+        assertEquals(2, model!!.selectedWeek.value)
+        compose.onNodeWithTag("week-title").assertTextContains("第 2 周", substring = true)
+        compose.onNodeWithTag("period-2-end").assertIsDisplayed()
+        compose.onNodeWithTag("day-header-6").assertDoesNotExist()
+    }
+
+    @Test fun shortFastFlingUpdatesTitleBeforeCrossingHalfPage() {
+        val snapshot = sampleSnapshot()
+        launch(snapshot, settings = AppSettings(termStarts = mapOf(snapshot.scopeKey to "2026-10-12")),
+            clock = Clock.fixed(Instant.parse("2026-10-12T00:00:00Z"), SCHOOL_ZONE))
+        val initialX = compose.onNodeWithTag("period-1-1").fetchSemanticsNode().positionInRoot.x
+        val width = compose.onNodeWithTag("week-pager").fetchSemanticsNode().size.width
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.onNodeWithTag("week-pager").performTouchInput {
+                swipe(start = androidx.compose.ui.geometry.Offset(this.width * 0.8f, centerY),
+                    end = androidx.compose.ui.geometry.Offset(this.width * 0.55f, centerY), durationMillis = 64)
+            }
+            compose.mainClock.advanceTimeBy(32)
+            val movingX = compose.onNodeWithTag("period-1-1").fetchSemanticsNode().positionInRoot.x
+            assertTrue("The first page should still occupy most of the viewport", initialX - movingX < width * 0.5f)
+            compose.onNodeWithTag("week-title").assertTextContains("第 2 周", substring = true)
+            assertNull(model!!.selectedWeek.value)
+        } finally { compose.mainClock.autoAdvance = true }
+        compose.waitForIdle()
+        assertEquals(2, model!!.selectedWeek.value)
+    }
+
+    @Test fun currentWeekAndCourseLocationSlideBackToCorrectPage() {
+        val course = TimetableParser.fromRaw(JsonObject(rawCourse("定位课程", "0102").toMutableMap().apply {
+            put("xq", JsonPrimitive(1)); put("zc", JsonPrimitive("1"))
+        }))
+        val snapshot = sampleSnapshot().copy(courses = listOf(course))
+        launch(snapshot, settings = AppSettings(termStarts = mapOf(snapshot.scopeKey to "2026-10-12")),
+            clock = Clock.fixed(Instant.parse("2026-10-12T00:00:00Z"), SCHOOL_ZONE))
+        compose.runOnIdle { model!!.selectWeek(2) }
+        compose.waitForIdle()
+        compose.onNodeWithTag("week-title").performClick()
+        compose.onNodeWithText("回到本周").performClick()
+        compose.onNodeWithTag("period-1-end").assertIsDisplayed()
+        compose.runOnIdle { model!!.selectWeek(2) }
+        compose.waitForIdle()
+        val initialX = compose.onNodeWithTag("period-2-1").fetchSemanticsNode().positionInRoot.x
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.onNodeWithTag("next-course-hint").performClick()
+            compose.mainClock.advanceTimeBy(128)
+            val movingX = compose.onNodeWithTag("period-2-1").fetchSemanticsNode().positionInRoot.x
+            assertTrue("Course location must slide toward the earlier week", movingX > initialX + 1f)
+        } finally { compose.mainClock.autoAdvance = true }
+        compose.waitForIdle()
+        compose.onNodeWithTag("period-1-end").assertIsDisplayed()
+        compose.onNodeWithTag("week-title").assertTextContains("第 1 周", substring = true)
+    }
+
+    @Test fun gestureCanInterruptRequestedWeekAndLaterSwipesStillWork() {
+        val snapshot = sampleSnapshot()
+        launch(snapshot, settings = AppSettings(termStarts = mapOf(snapshot.scopeKey to "2026-10-12")),
+            clock = Clock.fixed(Instant.parse("2026-10-12T00:00:00Z"), SCHOOL_ZONE))
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.runOnIdle { model!!.selectWeek(3) }
+            compose.mainClock.advanceTimeBy(64)
+            compose.onNodeWithTag("week-pager").performTouchInput { swipeRight() }
+        } finally { compose.mainClock.autoAdvance = true }
+        compose.waitForIdle()
+        val landed = model!!.selectedWeek.value!!
+        assertTrue(landed in 1..3)
+        compose.onNodeWithTag("period-$landed-end").assertIsDisplayed()
+        compose.onNodeWithTag("week-pager").performTouchInput { swipeLeft() }
+        compose.waitUntil(5000) { model!!.selectedWeek.value == landed + 1 }
+    }
+
+    @Test fun invalidSettingsStayAsDraftsAndValidEditsFlushWhenLeaving() {
+        val snapshot = sampleSnapshot()
+        launch(snapshot, settings = AppSettings(termStarts = mapOf(snapshot.scopeKey to "2026-10-12")))
+        compose.onNodeWithTag("open-settings").performClick()
+        expandSection("schedule")
+        compose.onNodeWithTag("term-start").performTextReplacement("2026-10-20")
+        compose.onNodeWithTag("term-start-error").assertExists()
+        assertEquals("2026-10-12", storage!!.settings.termStarts[snapshot.scopeKey])
+        compose.onNodeWithTag("term-start").performTextReplacement("2026-10-19")
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("highlight-minutes"))
+        compose.onNodeWithTag("highlight-minutes").performTextReplacement("25")
+        compose.onNodeWithTag("close-settings").performClick()
+        compose.waitUntil(5000) { storage!!.settings.highlightMinutes == 25 && storage!!.settings.termStarts[snapshot.scopeKey] == "2026-10-19" }
+        compose.onNodeWithTag("open-settings").performClick()
+        expandSection("schedule")
+        compose.onNodeWithTag("term-start").assertTextContains("2026-10-19")
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("highlight-minutes"))
+        compose.onNodeWithTag("highlight-minutes").assertTextContains("25")
+    }
+
     @Test fun weekendClassAutomaticallyExpandsAndCanBeExcludedInSettings() {
         val original = sampleSnapshot()
         val weekend = TimetableParser.fromRaw(JsonObject(rawCourse("周末测试课程", "0910").toMutableMap().apply { put("xq", JsonPrimitive(6)) }))
@@ -220,7 +398,7 @@ class TimetableUiTest {
         expandSection("theme")
         compose.onNodeWithTag("custom-theme").performClick()
         compose.onNodeWithTag("theme-color-hex").performTextReplacement("427E89")
-        compose.onNodeWithText("保存").performClick()
+        compose.onNodeWithText("关闭").performClick()
         compose.waitUntil(5000) { !repository!!.state.value.settings.useDynamicColor }
         assertEquals(0xFF427E89L, repository!!.state.value.settings.customPrimaryColor)
         compose.onNodeWithTag("dynamic-color-switch").performClick()
@@ -228,7 +406,7 @@ class TimetableUiTest {
         screenshot("settings")
     }
 
-    @Test fun courseDetailsCanSaveClearAndDiscardAppearanceDrafts() {
+    @Test fun courseDetailsAutoSaveClearAndFlushAppearanceOnClose() {
         val original = sampleSnapshot()
         val course = original.courses.first()
         val other = TimetableParser.fromRaw(JsonObject(course.raw.toMutableMap().apply {
@@ -238,18 +416,18 @@ class TimetableUiTest {
         compose.onNodeWithTag("course-${course.id}-1").performClick()
         chooseHex("#18304A")
         compose.onNodeWithTag("appearance-emoji").performScrollTo().performTextReplacement("🧑‍💻")
-        compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
         compose.waitUntil(5000) { repository!!.state.value.settings.appearances.values.any { it.emoji == "🧑‍💻" } }
         compose.onNodeWithTag("course-details").assertIsDisplayed()
         val appearance = CourseAppearance(0xFF18304AL, "🧑‍💻")
         assertEquals(appearance, repository!!.state.value.settings.appearance(original, course))
         assertEquals(appearance, repository!!.state.value.settings.appearance(original, other))
-        compose.onNodeWithTag("appearance-emoji").performScrollTo().performTextReplacement("未保存")
+        compose.onNodeWithTag("save-appearance").assertDoesNotExist()
+        compose.onNodeWithText("清除 emoji").assertDoesNotExist()
+        compose.onNodeWithTag("appearance-emoji").performScrollTo().performTextReplacement("关闭即保存")
         dismissSheet()
+        compose.waitUntil(5000) { storage!!.settings.appearance(original, course).emoji == "关闭即保存" }
         compose.onNodeWithTag("course-${course.id}-1").performClick()
-        compose.onNodeWithTag("appearance-emoji").performScrollTo().assertTextContains("🧑‍💻")
-        compose.onNodeWithText("清除 emoji").performScrollTo().performClick()
-        compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
+        compose.onNodeWithTag("appearance-emoji").performScrollTo().assertTextContains("关闭即保存").performTextReplacement("")
         compose.waitUntil(5000) { repository!!.state.value.settings.appearances.values.single().emoji.isEmpty() }
         dismissSheet()
         compose.onNodeWithTag("course-${course.id}-1").assertIsDisplayed()
@@ -267,15 +445,16 @@ class TimetableUiTest {
         compose.onNodeWithText("请输入6位十六进制颜色").performScrollTo().assertIsDisplayed()
         assertTrue(storage!!.settings.appearances.isEmpty())
         compose.onNodeWithTag("appearance-hex").performScrollTo().performTextReplacement("AABBCC")
+        storage!!.failSettingsSave = true
         compose.onNodeWithTag("confirm-course-color").performClick()
         compose.onNodeWithTag("appearance-emoji").performScrollTo().performTextReplacement("🌐")
-        storage!!.failSettingsSave = true
-        compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
+        compose.waitUntil(5000) { model!!.appearanceDraft(repository!!.state.value.snapshot!!.scopeKey, course,
+            AppSettings().appearance(repository!!.state.value.snapshot!!, course)).state.value.canRetry }
         compose.onNodeWithTag("appearance-save-error").performScrollTo().assertTextContains("磁盘写入失败")
         assertTrue(repository!!.state.value.settings.appearances.isEmpty())
         compose.onNodeWithTag("appearance-emoji").performScrollTo().assertTextContains("🌐")
         storage!!.failSettingsSave = false
-        compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
+        compose.onNodeWithTag("appearance-save-error-retry").performScrollTo().performClick()
         compose.waitUntil(5000) { repository!!.state.value.settings.appearances.values.any { it.emoji == "🌐" } }
         compose.onNodeWithTag("appearance-save-error").assertDoesNotExist()
     }
@@ -287,7 +466,6 @@ class TimetableUiTest {
         compose.onNodeWithText("2门重叠", useUnmergedTree = true).performClick()
         compose.onNodeWithTag("select-conflict-${other.id}").performClick()
         compose.onNodeWithTag("appearance-emoji").performScrollTo().performTextReplacement("📘")
-        compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
         compose.waitUntil(5000) { repository!!.state.value.settings.appearances.isNotEmpty() }
         assertEquals(setOf("${original.scopeKey}:${other.courseKey}"), repository!!.state.value.settings.appearances.keys)
     }
@@ -319,7 +497,6 @@ class TimetableUiTest {
         val course = repository!!.state.value.snapshot!!.courses.first()
         compose.onNodeWithTag("course-${course.id}-1").performClick()
         compose.onNodeWithTag("appearance-emoji").performScrollTo().performClick().performTextReplacement("📚")
-        compose.onNodeWithTag("save-appearance").performScrollTo().assertIsDisplayed().performClick()
         compose.waitUntil(5000) { repository!!.state.value.settings.appearances.values.any { it.emoji == "📚" } }
         screenshot("compact-editor-keyboard")
     }
@@ -335,8 +512,7 @@ class TimetableUiTest {
             .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.SetProgress) { it(0.4f) }
         compose.onNodeWithTag("appearance-color-15684432").performScrollTo().performClick() // EF5350
         compose.onNodeWithTag("cancel-course-color").performClick()
-        compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
-        compose.waitUntil(5000) { storage!!.settings.appearances.isNotEmpty() }
+        assertTrue(storage!!.settings.appearances.isEmpty())
         assertEquals(AppSettings().appearance(original, course), storage!!.settings.appearance(original, course))
         compose.onNodeWithTag("open-course-color").performScrollTo().performClick()
         compose.onNodeWithTag("appearance-hex").performScrollTo().performTextReplacement("123456")
@@ -347,8 +523,7 @@ class TimetableUiTest {
         compose.onNodeWithTag("appearance-hex").performScrollTo().assertTextContains("123456")
         compose.onNodeWithTag("confirm-course-color").performClick()
         compose.onNodeWithTag("appearance-emoji").performScrollTo().performTextReplacement("🧑‍💻")
-        compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
-        compose.waitUntil(5000) { storage!!.settings.appearance(original, course).color == 0xFF123456L }
+        compose.waitUntil(5000) { storage!!.settings.appearance(original, course) == CourseAppearance(0xFF123456L, "🧑‍💻") }
         screenshot("compact-circle-picker-saved")
     }
 
@@ -362,12 +537,12 @@ class TimetableUiTest {
         compose.onNodeWithTag("appearance-${course.courseKey}").performClick()
         chooseHex("18304A")
         compose.onNodeWithTag("appearance-emoji").performScrollTo().performTextReplacement("📚")
-        compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
         compose.waitUntil(5000) { storage!!.settings.appearance(original, course) == CourseAppearance(0xFF18304AL, "📚") }
-        compose.onNodeWithTag("appearance-form").assertDoesNotExist()
+        compose.onNodeWithTag("appearance-form").assertExists()
+        compose.onNodeWithText("关闭").performClick()
     }
 
-    @Test fun detailsShowChineseMetadataAndKeepExtraInformationCollapsed() {
+    @Test fun detailsShowAllChineseMetadataWithoutExpanding() {
         val original = sampleSnapshot()
         val course = TimetableParser.fromRaw(JsonObject(original.courses.single().raw.toMutableMap().apply {
             put("zxs", JsonPrimitive(1)); put("xs", JsonPrimitive(4)); put("xf", JsonPrimitive("2.5"))
@@ -379,9 +554,9 @@ class TimetableUiTest {
         compose.onNodeWithText("总学时").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("本次学时").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("学分").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("上课日期").assertDoesNotExist()
+        compose.onNodeWithText("上课日期").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("考试形式").assertDoesNotExist()
-        compose.onNodeWithTag("course-more-information").performScrollTo().performClick()
+        compose.onNodeWithTag("course-more-information").assertDoesNotExist()
         compose.onNodeWithText("实践教学").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("授课内容简介").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("隐藏的场地代码").assertDoesNotExist()
@@ -421,8 +596,6 @@ class TimetableUiTest {
         expandSection("schedule")
         compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("highlight-minutes"))
         compose.onNodeWithTag("highlight-minutes").performTextReplacement("0")
-        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("save-highlight-minutes"))
-        compose.onNodeWithTag("save-highlight-minutes").performClick()
         compose.waitUntil(5000) { storage!!.settings.highlightMinutes == 0 }
         compose.onNodeWithTag("close-settings").performClick()
         compose.onNodeWithTag("next-course-hint").assertDoesNotExist()

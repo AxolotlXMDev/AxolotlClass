@@ -28,6 +28,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import github.axolotl.aclass.TimetableViewModel
+import github.axolotl.aclass.AutoSaveDraft
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import github.axolotl.aclass.data.*
 import java.time.Instant
 import java.time.LocalDate
@@ -44,8 +46,11 @@ fun SettingsScreen(state: AppState, today: LocalDate, working: Boolean, model: T
     var inputTerm by rememberSaveable(account?.term, state.snapshot?.term) { mutableStateOf(account?.term ?: term) }
     var passwordVisible by remember { mutableStateOf(false) }
     val start = state.settings.termStart(state.snapshot, term)
-    var startInput by rememberSaveable(start.toString()) { mutableStateOf(start.toString()) }
-    var highlightInput by rememberSaveable(state.settings.highlightMinutes) { mutableStateOf(state.settings.highlightMinutes.toString()) }
+    val scopeKey = state.snapshot?.scopeKey ?: ":$term"
+    val dateDraft = remember(model, scopeKey, state.loading) { model.termStartDraft(scopeKey, start.toString()) }
+    val dateState by dateDraft.state.collectAsStateWithLifecycle()
+    val highlightDraft = remember(model, state.loading) { model.highlightDraft() }
+    val highlightState by highlightDraft.state.collectAsStateWithLifecycle()
     var transparency by remember(state.settings.backgroundTransparency) { mutableFloatStateOf(state.settings.backgroundTransparency) }
     var mainUiOpacity by remember(state.settings.mainUiOpacity) { mutableFloatStateOf(state.settings.mainUiOpacity) }
     var expanded by rememberSaveable { mutableStateOf(if (!state.loading && state.snapshot == null) "account" else "") }
@@ -109,24 +114,25 @@ fun SettingsScreen(state: AppState, today: LocalDate, working: Boolean, model: T
             }
             if (expanded == "schedule") item("schedule-body") {
                 SettingsBody {
+                    AutoSaveBinding(dateDraft)
+                    AutoSaveBinding(highlightDraft)
                     Text(termLabel(term), style = MaterialTheme.typography.bodyMedium)
-                    OutlinedTextField(startInput, { startInput = it }, label = { Text("第一周周一${if (state.settings.isEstimated(state.snapshot, term)) "（估算）" else ""}") },
+                    OutlinedTextField(dateState.value, { dateDraft.change(it, force = true) }, isError = dateState.error != null,
+                        label = { Text("第一周周一${if (state.settings.isEstimated(state.snapshot, term)) "（估算）" else ""}") },
                         supportingText = { Text("YYYY-MM-DD，按学校校历校准") }, singleLine = true,
-                        modifier = Modifier.fillMaxWidth().testTag("term-start"))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { model.setTermStart(startInput) }, enabled = !working) { Text("保存日期") }
-                        TextButton(onClick = model::resetTermStart, enabled = !working) { Text("恢复估算") }
-                    }
+                        modifier = Modifier.fillMaxWidth().flushOnBlur(dateDraft).testTag("term-start"))
+                    AutoSaveError(dateState, dateDraft, "term-start-error")
+                    TextButton(onClick = model::resetTermStart, enabled = !working) { Text("恢复估算") }
                     OutlinedButton(onClick = { periodsOpen = true }, modifier = Modifier.fillMaxWidth().testTag("edit-periods")) {
                         Text("编辑节次时间 · ${visiblePeriodCount(state)}节")
                     }
                     HorizontalDivider()
-                    OutlinedTextField(highlightInput, { highlightInput = it }, label = { Text("开课后继续高亮（分钟）") },
+                    OutlinedTextField(highlightState.value, { highlightDraft.change(it) }, isError = highlightState.error != null,
+                        label = { Text("开课后继续高亮（分钟）") },
                         supportingText = { Text("0～60 分钟；到达截止时间后高亮下一节课") }, singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth().testTag("highlight-minutes"))
-                    OutlinedButton(onClick = { model.setHighlightMinutes(highlightInput) }, enabled = !working,
-                        modifier = Modifier.testTag("save-highlight-minutes")) { Text("保存高亮时长") }
+                        modifier = Modifier.fillMaxWidth().flushOnBlur(highlightDraft).testTag("highlight-minutes"))
+                    AutoSaveError(highlightState, highlightDraft, "highlight-minutes-error")
                 }
             }
             item("appearance-header") {
@@ -221,41 +227,35 @@ fun SettingsScreen(state: AppState, today: LocalDate, working: Boolean, model: T
             }
         }
     }
-    if (themeEditorOpen) ThemeColorEditor(state.settings.customPrimaryColor,
-        onSave = { model.setThemeColor(it); themeEditorOpen = false }, onDismiss = { themeEditorOpen = false })
-    if (periodsOpen) PeriodEditor(state.settings.periods, visiblePeriodCount(state),
-        onSave = { model.savePeriods(it); periodsOpen = false }, onDismiss = { periodsOpen = false })
+    if (themeEditorOpen) ThemeColorEditor(model.themeDraft(), onDismiss = { themeEditorOpen = false })
+    if (periodsOpen) PeriodEditor(model.periodsDraft(visiblePeriodCount(state)), visiblePeriodCount(state), onDismiss = { periodsOpen = false })
     appearanceSelection?.let { selection ->
-        AppearanceEditor(selection, !working,
-            onSave = { appearance, complete -> model.saveAppearance(selection.scopeKey, selection.course, appearance, complete) },
+        AppearanceEditor(selection, model,
             onDismiss = { if (appearanceSelection === selection) appearanceSelection = null })
     }
 }
 @Composable
-private fun ThemeColorEditor(current: Long, onSave: (Long) -> Unit, onDismiss: () -> Unit) {
-    var hex by remember { mutableStateOf("%06X".format(current and 0xFFFFFF)) }
-    var error by remember { mutableStateOf(false) }
+private fun ThemeColorEditor(draft: AutoSaveDraft<String>, onDismiss: () -> Unit) {
+    AutoSaveBinding(draft)
+    val status by draft.state.collectAsStateWithLifecycle()
+    val hex = status.value
     AlertDialog(onDismissRequest = onDismiss, title = { Text("自定义主题色") }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("保存后使用自定义配色，可随时切回系统莫奈。", style = MaterialTheme.typography.bodySmall)
+            Text("修改后自动使用自定义配色，可随时切回系统莫奈。", style = MaterialTheme.typography.bodySmall)
             listOf(0xFF4E709BL, 0xFF507A69L, 0xFF966681L, 0xFF886846L, 0xFF67579EL, 0xFF427E89L).chunked(3).forEach { row ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                     row.forEach { color ->
                         Box(Modifier.size(48.dp).background(Color(color.toInt()), CircleShape)
                             .border(2.dp, if (hex.equals("%06X".format(color and 0xFFFFFF), true)) MaterialTheme.colorScheme.primary else Color.Transparent, CircleShape)
-                            .clickable { hex = "%06X".format(color and 0xFFFFFF) })
+                            .clickable { draft.change("%06X".format(color and 0xFFFFFF), immediate = true, force = true) })
                     }
                 }
             }
-            OutlinedTextField(hex, { hex = it; error = false }, label = { Text("主题色 HEX") }, prefix = { Text("#") }, singleLine = true,
-                modifier = Modifier.testTag("theme-color-hex"))
-            if (error) Text("请输入6位十六进制颜色", color = MaterialTheme.colorScheme.error)
+            OutlinedTextField(hex, { draft.change(it, force = true) }, label = { Text("主题色 HEX") }, prefix = { Text("#") }, singleLine = true,
+                isError = status.error != null, modifier = Modifier.flushOnBlur(draft).testTag("theme-color-hex"))
+            AutoSaveError(status, draft, "theme-color-error")
         }
-    }, confirmButton = { TextButton(onClick = {
-        val value = hex.removePrefix("#")
-        error = !Regex("[0-9a-fA-F]{6}").matches(value)
-        if (!error) onSave(0xFF000000L or value.toLong(16))
-    }) { Text("保存") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
+    }, confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } })
 }
 
 @Composable
@@ -283,25 +283,27 @@ private fun SettingsBody(content: @Composable ColumnScope.() -> Unit) {
 }
 
 @Composable
-private fun PeriodEditor(current: List<PeriodTime>, observedCount: Int, onSave: (List<PeriodTime>) -> Unit, onDismiss: () -> Unit) {
-    var periods by remember { mutableStateOf(List(maxOf(current.size, observedCount)) { current.getOrNull(it) ?: PeriodTime() }) }
-    var error by remember { mutableStateOf(false) }
+private fun PeriodEditor(draft: AutoSaveDraft<List<PeriodTime>>, observedCount: Int, onDismiss: () -> Unit) {
+    AutoSaveBinding(draft)
+    val status by draft.state.collectAsStateWithLifecycle()
+    val periods = status.value
     AlertDialog(onDismissRequest = onDismiss, title = { Text("节次时间") }, text = {
         Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("时间格式 HH:mm，未知时间可留空。", style = MaterialTheme.typography.bodySmall)
             periods.forEachIndexed { index, period ->
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("${index + 1}", Modifier.width(22.dp))
-                    OutlinedTextField(period.start, { value -> periods = periods.toMutableList().apply { set(index, period.copy(start = value)) } },
-                        label = { Text("开始") }, singleLine = true, modifier = Modifier.weight(1f))
-                    OutlinedTextField(period.end, { value -> periods = periods.toMutableList().apply { set(index, period.copy(end = value)) } },
-                        label = { Text("结束") }, singleLine = true, modifier = Modifier.weight(1f))
+                    OutlinedTextField(period.start, { value -> draft.change(draft.state.value.value.toMutableList().apply { set(index, get(index).copy(start = value)) }) },
+                        label = { Text("开始") }, singleLine = true, isError = !validPeriodTime(period),
+                        modifier = Modifier.weight(1f).flushOnBlur(draft).testTag("period-start-${index + 1}"))
+                    OutlinedTextField(period.end, { value -> draft.change(draft.state.value.value.toMutableList().apply { set(index, get(index).copy(end = value)) }) },
+                        label = { Text("结束") }, singleLine = true, isError = !validPeriodTime(period),
+                        modifier = Modifier.weight(1f).flushOnBlur(draft).testTag("period-end-${index + 1}"))
                 }
             }
-            TextButton(onClick = { if (periods.size < 99) periods = periods + PeriodTime() }) { Text("＋ 添加一节") }
-            if (periods.size > maxOf(10, observedCount)) TextButton(onClick = { periods = periods.dropLast(1) }) { Text("删除末节") }
-            if (error) Text("请检查时间格式及开始、结束顺序", color = MaterialTheme.colorScheme.error)
+            TextButton(onClick = { if (periods.size < 99) draft.change(periods + PeriodTime(), immediate = true) }) { Text("＋ 添加一节") }
+            if (periods.size > maxOf(10, observedCount)) TextButton(onClick = { draft.change(periods.dropLast(1), immediate = true) }) { Text("删除末节") }
+            AutoSaveError(status, draft, "period-time-error")
         }
-    }, confirmButton = { TextButton(onClick = { error = periods.any { !validPeriodTime(it) }; if (!error) onSave(periods) }) { Text("保存") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
+    }, confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } })
 }

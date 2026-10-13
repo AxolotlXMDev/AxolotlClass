@@ -9,7 +9,6 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -20,6 +19,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import github.axolotl.aclass.data.*
+import github.axolotl.aclass.TimetableViewModel
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
@@ -75,9 +75,8 @@ fun WeekPicker(state: AppState, selected: Int, current: Int, start: LocalDate, p
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun CourseDetails(selection: AppearanceSelection, state: AppState, week: Int, start: LocalDate,
-                           enabled: Boolean, onSave: (CourseAppearance, (Result<Unit>) -> Unit) -> Unit, onDismiss: () -> Unit) {
+                           model: TimetableViewModel, onDismiss: () -> Unit) {
     val course = selection.course
-    var moreExpanded by rememberSaveable { mutableStateOf(false) }
     val appearance = state.settings.appearances["${selection.scopeKey}:${course.courseKey}"] ?: selection.appearance
     val emoji = appearance.emoji
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
@@ -85,7 +84,7 @@ internal fun CourseDetails(selection: AppearanceSelection, state: AppState, week
             .padding(bottom = 28.dp).testTag("course-details"), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text(listOf(emoji, course.name).filter(String::isNotBlank).joinToString(" "), style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold)
-            CourseAppearanceForm(course, selection.draft, enabled, onSave)
+            CourseAppearanceForm(selection, model)
             HorizontalDivider()
             DetailRow("任课教师", course.teacher.ifBlank { "待定" })
             DetailRow("上课地点", course.location.ifBlank { "待定" })
@@ -93,21 +92,16 @@ internal fun CourseDetails(selection: AppearanceSelection, state: AppState, week
             course.information("xs")?.let { DetailRow("本次学时", it) }
             course.information("xf")?.let { DetailRow("学分", it) }
             HorizontalDivider()
-            TextButton(onClick = { moreExpanded = !moreExpanded }, modifier = Modifier.fillMaxWidth().testTag("course-more-information")) {
-                Text(if (moreExpanded) "收起更多信息 ▴" else "更多信息 ▾")
+            DetailRow("上课日期", "${dateOf(start, week, course.day)} · ${DAY_NAMES[course.day - 1]}")
+            DetailRow("节次", "第${compactNumbers(course.periods)}节")
+            val times = course.periods.map { period ->
+                val time = state.settings.periods.getOrNull(period - 1)
+                "第${period}节 " + if (time != null && time.start.isNotBlank()) "${time.start}～${time.end}" else "时间待设置"
             }
-            if (moreExpanded) {
-                DetailRow("上课日期", "${dateOf(start, week, course.day)} · ${DAY_NAMES[course.day - 1]}")
-                DetailRow("节次", "第${compactNumbers(course.periods)}节")
-                val times = course.periods.map { period ->
-                    val time = state.settings.periods.getOrNull(period - 1)
-                    "第${period}节 " + if (time != null && time.start.isNotBlank()) "${time.start}～${time.end}" else "时间待设置"
-                }
-                DetailRow("具体时间", times.joinToString("\n"))
-                DetailRow("课程周次", "第${compactNumbers(course.weeks)}周")
-                DetailRow("学年学期", termLabel(state.snapshot?.term ?: course.raw.text("xnxqdm")))
-                course.additionalInformation().forEach { (label, value) -> DetailRow(label, value) }
-            }
+            DetailRow("具体时间", times.joinToString("\n"))
+            DetailRow("课程周次", "第${compactNumbers(course.weeks)}周")
+            DetailRow("学年学期", termLabel(state.snapshot?.term ?: course.raw.text("xnxqdm")))
+            course.additionalInformation().forEach { (label, value) -> DetailRow(label, value) }
         }
     }
 }

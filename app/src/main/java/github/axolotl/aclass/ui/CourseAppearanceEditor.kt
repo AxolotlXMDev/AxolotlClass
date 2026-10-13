@@ -24,6 +24,8 @@ import androidx.compose.ui.unit.dp
 import github.axolotl.aclass.data.CourseAppearance
 import github.axolotl.aclass.data.CourseRecord
 import github.axolotl.aclass.data.TimetableParser
+import github.axolotl.aclass.TimetableViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.serialization.json.jsonObject
 
 internal const val COURSE_CARD_ALPHA = 0.92f
@@ -68,26 +70,30 @@ internal val appearanceSelectionSaver = Saver<AppearanceSelection?, List<String>
     }.getOrNull() },
 )
 
-/** The host supplies scrolling and decides whether a successful save closes the editor. */
 @Composable
 internal fun CourseAppearanceForm(
-    course: CourseRecord,
-    draft: AppearanceDraft,
-    enabled: Boolean,
-    onSave: (CourseAppearance, (Result<Unit>) -> Unit) -> Unit,
-    onSaved: () -> Unit = {},
+    selection: AppearanceSelection,
+    model: TimetableViewModel,
 ) {
-    var color by draft.color
-    var emoji by draft.emoji
-    var picker by draft.picker
-    var error by remember { mutableStateOf<String?>(null) }
-    var saving by remember { mutableStateOf(false) }
-    var saved by remember { mutableStateOf(false) }
-    val canEdit = enabled && !saving
+    val course = selection.course
+    val draft = remember(model, selection.scopeKey, course.courseKey) {
+        model.appearanceDraft(selection.scopeKey, course, selection.appearance)
+    }
+    AutoSaveBinding(draft)
+    val status by draft.state.collectAsStateWithLifecycle()
+    val color = status.value.color
+    val emoji = status.value.emoji
+    var picker by selection.draft.picker
+    val restored = remember(selection) { CourseAppearance(selection.draft.color.longValue, selection.draft.emoji.value) }
+    LaunchedEffect(selection) {
+        if (restored != selection.appearance && draft.state.value.value == selection.appearance) draft.change(restored)
+    }
+    SideEffect {
+        selection.draft.color.longValue = color
+        selection.draft.emoji.value = emoji
+    }
     val preview = Color(color.toInt())
     val ink = courseInk(preview)
-    val savedCallback by rememberUpdatedState(onSaved)
-    fun changed() { error = null; saved = false }
 
     Column(Modifier.fillMaxWidth().testTag("appearance-form"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Column(Modifier.fillMaxWidth().background(preview.copy(alpha = COURSE_CARD_ALPHA), RoundedCornerShape(8.dp))
@@ -99,7 +105,7 @@ internal fun CourseAppearanceForm(
         }
         Row(Modifier.fillMaxWidth().testTag("appearance-controls"), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Column(Modifier.width(64.dp).clickable(enabled = canEdit, role = Role.Button,
+            Column(Modifier.width(64.dp).clickable(role = Role.Button,
                 onClickLabel = "选择课程颜色") { picker = ColorPickerDraft(color) }
                 .semantics { contentDescription = "当前颜色 #%06X，选择课程颜色".format(color and 0xFFFFFF) }
                 .testTag("open-course-color").padding(vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -107,37 +113,23 @@ internal fun CourseAppearanceForm(
                     .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape))
                 Text("颜色", style = MaterialTheme.typography.labelMedium)
             }
-            OutlinedTextField(emoji, { emoji = it; changed() }, enabled = canEdit,
+            OutlinedTextField(emoji, { draft.change(draft.state.value.value.copy(emoji = it)) },
                 label = { Text("emoji") }, supportingText = { Text("留空即清除") }, singleLine = true,
-                modifier = Modifier.weight(1f).testTag("appearance-emoji"))
+                modifier = Modifier.weight(1f).flushOnBlur(draft).testTag("appearance-emoji"))
         }
-        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
-            verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            TextButton(onClick = { emoji = ""; changed() }, enabled = canEdit) { Text("清除 emoji") }
-            Button(enabled = canEdit, modifier = Modifier.testTag("save-appearance"), onClick = {
-                saving = true; error = null; saved = false
-                onSave(CourseAppearance(color, emoji.trim())) { result ->
-                    saving = false
-                    result.fold(onSuccess = { saved = true; savedCallback() },
-                        onFailure = { error = it.message ?: "保存失败，请重试" })
-                }
-            }) { Text(if (saving) "正在保存…" else "保存外观") }
-        }
-        error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("appearance-save-error")) }
-        if (saved) Text("课程外观已保存", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+        AutoSaveError(status, draft, "appearance-save-error")
     }
     picker?.let { pickerDraft -> CourseColorPicker(pickerDraft, onDismiss = { picker = null }, onConfirm = {
-        color = it; changed(); picker = null
+        draft.change(draft.state.value.value.copy(color = it), immediate = true); picker = null
     }) }
 }
 
 @Composable
-internal fun AppearanceEditor(selection: AppearanceSelection, enabled: Boolean,
-                              onSave: (CourseAppearance, (Result<Unit>) -> Unit) -> Unit, onDismiss: () -> Unit) {
+internal fun AppearanceEditor(selection: AppearanceSelection, model: TimetableViewModel, onDismiss: () -> Unit) {
     key(selection.scopeKey, selection.course.courseKey) {
         AlertDialog(onDismissRequest = onDismiss, modifier = Modifier.imePadding(), title = { Text("课程外观") }, text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                CourseAppearanceForm(selection.course, selection.draft, enabled, onSave, onSaved = onDismiss)
+                CourseAppearanceForm(selection, model)
             }
         }, confirmButton = {}, dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } })
     }
