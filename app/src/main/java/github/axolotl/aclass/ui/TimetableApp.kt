@@ -21,6 +21,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -42,6 +43,7 @@ import java.time.format.DateTimeFormatter
 
 val DAY_NAMES = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 private val SHORT_DATE = DateTimeFormatter.ofPattern("M/d")
+private val NEXT_COURSE_COLOR = Color(0xFFC64B08)
 
 @Composable
 fun TimetableApp(model: TimetableViewModel) {
@@ -191,15 +193,35 @@ private fun NextCourseHint(courses: List<CourseOccurrence>, now: Instant, opacit
     val date = target.startsAt.format(DateTimeFormatter.ofPattern("M月d日 HH:mm"))
     val timeAndPlace = "$date · ${DAY_NAMES[target.course.day - 1]} · $locations"
     val title = "$status：$names${if (courses.size > 1) "（${courses.size}门重叠）" else ""}"
-    Column(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 2.dp)
+    Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 2.dp)
         .background(MaterialTheme.colorScheme.surface.copy(alpha = opacity), RoundedCornerShape(10.dp))
         .clickable(role = androidx.compose.ui.semantics.Role.Button, onClickLabel = "定位到课程所在周", onClick = onClick)
         .semantics(mergeDescendants = true) { contentDescription = "$title，$timeAndPlace，点击定位" }
-        .testTag("next-course-hint").padding(horizontal = 12.dp, vertical = 6.dp)) {
-        Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(timeAndPlace, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        .testTag("next-course-hint").padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.width(4.dp).height(28.dp).background(NEXT_COURSE_COLOR, RoundedCornerShape(2.dp)))
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                NextCourseBadge(status)
+                Spacer(Modifier.width(6.dp))
+                Text("$names${if (courses.size > 1) "（${courses.size}门重叠）" else ""}",
+                    style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Text(timeAndPlace, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
+}
+
+@Composable
+private fun NextCourseBadge(label: String) {
+    val scale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    Text(label, color = Color.White, fontWeight = FontWeight.Bold,
+        fontSize = (9f / scale).sp,
+        lineHeight = (11f / scale).sp, maxLines = 1,
+        modifier = Modifier.background(NEXT_COURSE_COLOR, RoundedCornerShape(3.dp))
+            .padding(horizontal = 3.dp, vertical = 1.dp))
 }
 
 @Composable
@@ -320,28 +342,46 @@ private fun CourseCard(block: CourseBlock, appearance: CourseAppearance, height:
     val scale = LocalDensity.current.fontScale.coerceAtLeast(1f)
     val textSize = minOf(12f, maxOf(8f, height.value / 8f)) / scale
     val compactHeight = height.value < 70
-    Column(modifier.clip(RoundedCornerShape(8.dp)).background(base.copy(alpha = COURSE_CARD_ALPHA)).clickable(onClick = onClick)
-        .then(if (highlightLabel != null) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp))
-            .border(1.dp, ink, RoundedCornerShape(8.dp)) else Modifier)
+    val highlighted = highlightLabel != null
+    val smallBadge = compact || compactHeight
+    val badgeSpace = if (smallBadge) 12.dp else 14.dp
+    val shape = RoundedCornerShape(8.dp)
+    Box(modifier.clip(shape).background(base.copy(alpha = COURSE_CARD_ALPHA)).clickable(onClick = onClick)
         .semantics {
             contentDescription = block.courses.joinToString("，") { "${it.name}，${it.location}" }
             if (highlightLabel != null) stateDescription = highlightLabel
+        }) {
+        if (highlighted) Box(Modifier.matchParentSize().border(3.dp, NEXT_COURSE_COLOR, shape).padding(3.dp)
+            .border(1.dp, Color.White, RoundedCornerShape(5.dp)))
+        Column(Modifier.fillMaxSize().padding(
+            horizontal = if (compact) 3.dp else 5.dp,
+            vertical = if (height.value < 60) 3.dp else 7.dp)) {
+            if (block.courses.size > 1) Text("${block.courses.size}门重叠", color = ink,
+                fontSize = (8f / scale).sp, lineHeight = (10f / scale).sp, fontWeight = FontWeight.Bold, maxLines = 1,
+                overflow = TextOverflow.Ellipsis, modifier = if (highlighted) Modifier.padding(end = badgeSpace) else Modifier)
+            else if (!compactHeight && appearance.emoji.isNotBlank()) Text(appearance.emoji, fontSize = (13f / scale).sp,
+                lineHeight = (16f / scale).sp, maxLines = 1)
+            val title = if (compactHeight && block.courses.size == 1 && appearance.emoji.isNotBlank())
+                "${appearance.emoji} ${block.courses.first().name}" else block.courses.first().name
+            Text(title, fontSize = textSize.sp, lineHeight = (textSize * 1.25f).sp,
+                fontWeight = FontWeight.SemiBold, color = ink,
+                maxLines = if (block.end > block.start) 5 else 2, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+                    .then(if (highlighted && block.courses.size == 1 && (compactHeight || appearance.emoji.isBlank()))
+                        Modifier.padding(end = badgeSpace) else Modifier).testTag("course-title"))
+            Spacer(Modifier.height(2.dp))
+            Text(block.courses.first().location.ifBlank { "地点待定" }, fontSize = (10f / scale).sp,
+                lineHeight = (12f / scale).sp, color = ink, fontWeight = FontWeight.Medium,
+                maxLines = if (height.value > 75) 2 else 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("course-location"))
         }
-        .padding(horizontal = if (compact) 3.dp else 5.dp, vertical = if (height.value < 60) 3.dp else 7.dp)) {
-        if (block.courses.size > 1) Text("${block.courses.size}门重叠", color = ink,
-            fontSize = (8f / scale).sp, lineHeight = (10f / scale).sp, fontWeight = FontWeight.Bold, maxLines = 1)
-        else if (!compactHeight && appearance.emoji.isNotBlank()) Text(appearance.emoji, fontSize = (13f / scale).sp,
-            lineHeight = (16f / scale).sp, maxLines = 1)
-        val title = if (compactHeight && block.courses.size == 1 && appearance.emoji.isNotBlank())
-            "${appearance.emoji} ${block.courses.first().name}" else block.courses.first().name
-        Text(title, fontSize = textSize.sp, lineHeight = (textSize * 1.25f).sp,
-            fontWeight = FontWeight.SemiBold, color = ink,
-            maxLines = if (block.end > block.start) 5 else 2, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false).testTag("course-title"))
-        Spacer(Modifier.height(2.dp))
-        Text(block.courses.first().location.ifBlank { "地点待定" }, fontSize = (10f / scale).sp,
-            lineHeight = (12f / scale).sp, color = ink, fontWeight = FontWeight.Medium,
-            maxLines = if (height.value > 75) 2 else 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.testTag("course-location"))
+        if (highlighted) {
+            Text("⭐", fontSize = ((if (smallBadge) 8f else 10f) / scale).sp,
+                lineHeight = ((if (smallBadge) 10f else 12f) / scale).sp, maxLines = 1,
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 1.dp, end = 1.dp)
+                    .background(NEXT_COURSE_COLOR, RoundedCornerShape(topEnd = 7.dp, bottomStart = 5.dp))
+                    .padding(horizontal = 2.dp, vertical = 1.dp)
+                    .testTag("next-course-badge").clearAndSetSemantics { contentDescription = highlightLabel!! })
+        }
     }
 }

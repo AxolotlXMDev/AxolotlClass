@@ -103,8 +103,12 @@ class TimetableUiTest {
         val original = sampleSnapshot()
         val other = rawCourse("课程冲突示例", "0102")
         val courses = original.courses + TimetableParser.fromRaw(other)
-        launch(original.copy(courses = courses))
+        launch(original.copy(courses = courses), clock = Clock.fixed(
+            java.time.LocalDate.now(SCHOOL_ZONE).atTime(8, 5).atZone(SCHOOL_ZONE).toInstant(), SCHOOL_ZONE))
         assertCourseInformationCompact(courses.minBy { it.id }, 1)
+        compose.onNodeWithTag("next-course-badge", useUnmergedTree = true).assertContentDescriptionEquals("已开始，当前高亮课程").assertIsDisplayed()
+        compose.onNodeWithTag("next-course-hint").assertContentDescriptionContains("2门重叠", substring = true)
+        screenshot("highlight-conflict-started")
         compose.onNodeWithText("2门重叠", useUnmergedTree = true).performClick()
         compose.onNodeWithText("此时段有 2 门课程").assertIsDisplayed()
         compose.onAllNodesWithText("课程冲突示例").assertCountEquals(2)
@@ -154,9 +158,16 @@ class TimetableUiTest {
         val longCourse = TimetableParser.fromRaw(JsonObject(rawCourse("大学生职业生涯与发展规划", "07").toMutableMap().apply {
             put("xq", JsonPrimitive(6)); put("jxcdmc", JsonPrimitive("实验教学楼A座302教室"))
         }))
-        launch(original.copy(courses = listOf(longCourse)), compactLight = true)
+        launch(original.copy(courses = listOf(longCourse)), compactLight = true,
+            settings = AppSettings(termStarts = mapOf(original.scopeKey to "2026-10-12")),
+            clock = Clock.fixed(Instant.parse("2026-10-16T23:00:00Z"), SCHOOL_ZONE))
         compose.onNodeWithTag("day-header-7").assertIsDisplayed()
         assertCourseInformationCompact(longCourse, 7)
+        compose.onNodeWithTag("next-course-badge", useUnmergedTree = true).assertContentDescriptionEquals("下一节课程").assertIsDisplayed()
+        val card = hasTestTag("course-${longCourse.id}-7")
+        val title = compose.onNode(hasTestTag("course-title") and hasAnyAncestor(card), useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val badge = compose.onNodeWithTag("next-course-badge", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertTrue("Corner star must not cover a compact course title", title.right <= badge.left + 1f)
         screenshot("compact-seven-single-period")
     }
 
@@ -390,6 +401,7 @@ class TimetableUiTest {
         compose.onNodeWithTag("day-header-6").assertIsDisplayed()
         compose.onNodeWithTag("course-${course.id}-1").assert(
             SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "下一节课程"))
+        compose.onNodeWithTag("next-course-badge", useUnmergedTree = true).assertContentDescriptionEquals("下一节课程").assertIsDisplayed()
         compose.onNodeWithTag("toggle-weekend").performClick()
         compose.onNodeWithTag("day-header-6").assertDoesNotExist()
         compose.onNodeWithTag("next-course-hint").performClick()
@@ -431,6 +443,7 @@ class TimetableUiTest {
         launch(snapshot, settings = AppSettings(termStarts = mapOf(snapshot.scopeKey to "2026-10-12")), clock = clock)
         compose.onNodeWithTag("course-${first.id}-1").assert(
             SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "已开始，当前高亮课程"))
+        compose.onNodeWithTag("next-course-badge", useUnmergedTree = true).assertContentDescriptionEquals("已开始，当前高亮课程").assertIsDisplayed()
         compose.runOnIdle { model!!.selectWeek(2) }
         compose.onNodeWithTag("week-title").assertTextContains("第 2 周", substring = true)
         compose.runOnIdle {
@@ -443,6 +456,7 @@ class TimetableUiTest {
         compose.onNodeWithTag("week-title").assertTextContains("第 1 周", substring = true)
         compose.onNodeWithTag("course-${later.id}-3").assert(
             SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "下一节课程"))
+        compose.onNodeWithTag("next-course-badge", useUnmergedTree = true).assertContentDescriptionEquals("下一节课程").assertIsDisplayed()
     }
 
     private class UiClock(var value: Instant) : Clock() {
@@ -478,12 +492,24 @@ class TimetableUiTest {
         bitmap.recycle()
         val appearances = courses.associate { "${original.scopeKey}:${it.courseKey}" to CourseAppearance(0xFFADC9F2L, "📚") }
         launch(original.copy(courses = courses), darkMode = dark,
-            settings = AppSettings(backgroundPath = file.absolutePath, backgroundTransparency = 0.05f, appearances = appearances))
+            settings = AppSettings(backgroundPath = file.absolutePath, backgroundTransparency = 0.05f, appearances = appearances,
+                termStarts = mapOf(original.scopeKey to "2026-10-12")),
+            clock = Clock.fixed(Instant.parse("2026-10-11T23:00:00Z"), SCHOOL_ZONE))
         compose.waitUntil(5000) { compose.onAllNodesWithTag("timetable-background-image").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("today-header").assertIsDisplayed()
         compose.onNodeWithTag("today-column").assertIsDisplayed()
         if (weekends) compose.onNodeWithTag("day-header-7").assertIsDisplayed()
+        compose.onNodeWithTag("next-course-badge", useUnmergedTree = true).assertContentDescriptionEquals("下一节课程").assertIsDisplayed()
         courses.filter { it.day == 1 }.forEach { assertCourseInformationCompact(it, it.periods.min()) }
+        val highlightedCourse = courses.first { it.day == 1 && it.periods.min() == 1 }
+        val normalCourse = courses.first { it.day == 2 && it.periods.min() == 1 }
+        fun titleOffset(course: CourseRecord): Float {
+            val card = hasTestTag("course-${course.id}-1")
+            val title = compose.onNode(hasTestTag("course-title") and hasAnyAncestor(card), useUnmergedTree = true)
+            title.assertTextEquals(course.name)
+            return title.fetchSemanticsNode().boundsInRoot.top - compose.onNode(card).fetchSemanticsNode().boundsInRoot.top
+        }
+        assertEquals("Highlight must keep emoji and title positions", titleOffset(normalCourse), titleOffset(highlightedCourse), 1f)
         screenshot(if (dark) "wallpaper-dark-seven" else "wallpaper-light-five")
     }
 
