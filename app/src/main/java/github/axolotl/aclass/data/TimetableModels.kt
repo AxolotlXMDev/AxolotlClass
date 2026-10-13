@@ -40,6 +40,8 @@ data class TimetableSnapshot(
 data class AccountSettings(val studentId: String, val password: String, val term: String)
 data class PeriodTime(val start: String = "", val end: String = "")
 data class CourseAppearance(val color: Long, val emoji: String = "")
+const val DEFAULT_MAIN_UI_OPACITY = 0.82f
+
 data class AppSettings(
     val termStarts: Map<String, String> = emptyMap(),
     val appearances: Map<String, CourseAppearance> = emptyMap(),
@@ -49,6 +51,7 @@ data class AppSettings(
     val useDynamicColor: Boolean = true,
     val customPrimaryColor: Long = 0xFF4E709BL,
     val hiddenWeekendCourses: Set<String> = emptySet(),
+    val mainUiOpacity: Float = DEFAULT_MAIN_UI_OPACITY,
 ) {
     fun termStart(snapshot: TimetableSnapshot?, fallbackTerm: String): LocalDate =
         termStarts[snapshot?.scopeKey ?: ":$fallbackTerm"]?.let(LocalDate::parse)
@@ -110,6 +113,13 @@ fun termLabel(term: String): String = if (validTerm(term)) {
 } else term
 
 data class CourseBlock(val start: Int, val end: Int, val courses: List<CourseRecord>)
+
+/** One occupied dot per day and pair of periods (1–2, 3–4, ...). */
+fun pairedPeriodSlots(courses: List<CourseRecord>, week: Int, periodCount: Int): Set<Pair<Int, Int>> = buildSet {
+    courses.filter { week in it.weeks }.forEach { course ->
+        course.periods.filter { it in 1..periodCount }.forEach { period -> add(course.day to (period + 1) / 2) }
+    }
+}
 
 /** Consecutive slots with identical occupants share a card; conflicts never hide a course. */
 fun courseBlocks(courses: List<CourseRecord>, week: Int, day: Int, periodCount: Int): List<CourseBlock> {

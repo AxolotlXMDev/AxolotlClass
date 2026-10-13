@@ -77,6 +77,7 @@ class TimetableUiTest {
         launch(sampleSnapshot())
         compose.onNodeWithTag("today-header").assertIsDisplayed()
         val course = repository!!.state.value.snapshot!!.courses.first()
+        assertCourseInformationCompact(course, 1)
         compose.onNodeWithTag("course-${course.id}-1").performClick()
         compose.onNodeWithTag("course-details").assertIsDisplayed()
         compose.onAllNodesWithText("二教302", useUnmergedTree = true)[0].assertExists()
@@ -99,7 +100,9 @@ class TimetableUiTest {
     @Test fun conflictPickerListsEveryCourse() {
         val original = sampleSnapshot()
         val other = rawCourse("课程冲突示例", "0102")
-        launch(original.copy(courses = original.courses + TimetableParser.fromRaw(other)))
+        val courses = original.courses + TimetableParser.fromRaw(other)
+        launch(original.copy(courses = courses))
+        assertCourseInformationCompact(courses.minBy { it.id }, 1)
         compose.onNodeWithText("2门重叠", useUnmergedTree = true).performClick()
         compose.onNodeWithText("此时段有 2 门课程").assertIsDisplayed()
         compose.onAllNodesWithText("课程冲突示例").assertCountEquals(2)
@@ -137,10 +140,22 @@ class TimetableUiTest {
 
     @Test fun smallViewportAndLargeFontsKeepTenthAndEndRowsVisible() {
         launch(sampleSnapshot(), compactLight = true)
+        assertCourseInformationCompact(repository!!.state.value.snapshot!!.courses.first(), 1)
         val week = weekOf(java.time.LocalDate.now(SCHOOL_ZONE), estimateTermStart(defaultTerm(java.time.LocalDate.now(SCHOOL_ZONE))))
         compose.onNodeWithTag("period-$week-10").assertIsDisplayed()
         compose.onNodeWithTag("period-$week-end").assertIsDisplayed()
         screenshot("compact-light")
+    }
+
+    @Test fun compactSevenColumnSinglePeriodKeepsLongNameAndLocationVisible() {
+        val original = sampleSnapshot()
+        val longCourse = TimetableParser.fromRaw(JsonObject(rawCourse("大学生职业生涯与发展规划", "07").toMutableMap().apply {
+            put("xq", JsonPrimitive(6)); put("jxcdmc", JsonPrimitive("实验教学楼A座302教室"))
+        }))
+        launch(original.copy(courses = listOf(longCourse)), compactLight = true)
+        compose.onNodeWithTag("day-header-7").assertIsDisplayed()
+        assertCourseInformationCompact(longCourse, 7)
+        screenshot("compact-seven-single-period")
     }
 
     @Test fun allPeriodsFitAndHorizontalSwipesChangeWeekOnly() {
@@ -325,6 +340,7 @@ class TimetableUiTest {
         compose.onNodeWithTag("today-header").assertIsDisplayed()
         compose.onNodeWithTag("today-column").assertIsDisplayed()
         if (weekends) compose.onNodeWithTag("day-header-7").assertIsDisplayed()
+        courses.filter { it.day == 1 }.forEach { assertCourseInformationCompact(it, it.periods.min()) }
         screenshot(if (dark) "wallpaper-dark-seven" else "wallpaper-light-five")
     }
 
@@ -348,6 +364,60 @@ class TimetableUiTest {
         compose.waitUntil(5000) { repository!!.state.value.settings.backgroundPath == null }
         assertFalse(imported.exists())
         source.delete()
+    }
+
+    @Test fun mainUiOpacitySliderSavesAndSurvivesSettingsReentry() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val wallpaper = File(context.cacheDir, "opacity-wallpaper.png")
+        generatedFiles += wallpaper
+        val bitmap = android.graphics.Bitmap.createBitmap(100, 100, android.graphics.Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(0xFF9EC6E8.toInt())
+        wallpaper.outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+        bitmap.recycle()
+        launch(sampleSnapshot(), settings = AppSettings(backgroundPath = wallpaper.absolutePath))
+        compose.waitUntil(5000) { compose.onAllNodesWithTag("timetable-background-image").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("open-settings").performClick()
+        expandSection("background")
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("main-ui-opacity"))
+        compose.onNodeWithTag("main-ui-opacity").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.SetProgress) { it(0.35f) }
+        compose.waitUntil(5000) { repository!!.state.value.settings.mainUiOpacity == 0.35f }
+        assertEquals(0.35f, storage!!.settings.mainUiOpacity)
+        assertEquals(0.25f, storage!!.settings.backgroundTransparency)
+        compose.onNodeWithTag("close-settings").performClick()
+        compose.onNodeWithTag("today-header").assertIsDisplayed()
+        screenshot("main-ui-opacity-35")
+        compose.onNodeWithTag("open-settings").performClick()
+        expandSection("background")
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("main-ui-opacity"))
+        compose.onNodeWithTag("main-ui-opacity").assertRangeInfoEquals(
+            androidx.compose.ui.semantics.ProgressBarRangeInfo(0.35f, 0f..1f))
+        screenshot("main-ui-opacity-settings")
+        listOf(0f, 1f).forEach { value ->
+            compose.onNodeWithTag("main-ui-opacity").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.SetProgress) { it(value) }
+            compose.waitUntil(5000) { repository!!.state.value.settings.mainUiOpacity == value }
+            compose.onNodeWithTag("close-settings").performClick()
+            compose.onNodeWithTag("today-header").assertIsDisplayed()
+            compose.onNodeWithTag("week-title").assertIsDisplayed()
+            assertCourseInformationCompact(repository!!.state.value.snapshot!!.courses.first(), 1)
+            screenshot("main-ui-opacity-${(value * 100).toInt()}")
+            compose.onNodeWithTag("open-settings").performClick()
+            expandSection("background")
+            compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("main-ui-opacity"))
+        }
+    }
+
+    private fun assertCourseInformationCompact(course: CourseRecord, start: Int) {
+        val card = hasTestTag("course-${course.id}-$start")
+        val title = compose.onNode(hasTestTag("course-title") and hasAnyAncestor(card), useUnmergedTree = true)
+        val location = compose.onNode(hasTestTag("course-location") and hasAnyAncestor(card), useUnmergedTree = true)
+        title.assertIsDisplayed()
+        location.assertIsDisplayed()
+        val titleBounds = title.fetchSemanticsNode().boundsInRoot
+        val locationBounds = location.fetchSemanticsNode().boundsInRoot
+        val cardBounds = compose.onNode(card).fetchSemanticsNode().boundsInRoot
+        val density = InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
+        assertEquals(2f * density, locationBounds.top - titleBounds.bottom, 1f)
+        assertTrue("Location must fit inside its card", locationBounds.bottom <= cardBounds.bottom)
     }
 
     private fun sampleSnapshot(): TimetableSnapshot {

@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModelStore
 import github.axolotl.aclass.data.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.*
 import org.junit.After
 import org.junit.Assert.*
@@ -83,6 +85,38 @@ class TimetableViewModelTest {
         assertTrue(result!!.isSuccess)
         assertEquals(setOf("${opened.scopeKey}:${opened.courses.first().courseKey}"), storage.settings.appearances.keys)
         assertEquals("other:202602", repository.state.value.snapshot!!.scopeKey)
+    }
+
+    @Test fun opacitySaveFailureKeepsValueAndReportsErrorThenAllowsRetry() = modelTest { model ->
+        runCurrent()
+        val error = async { model.events.first() }
+        storage.failSave = true
+        model.setMainUiOpacity(0.45f)
+        runCurrent()
+        assertEquals("磁盘写入失败", error.await())
+        assertEquals(0.82f, repository.state.value.settings.mainUiOpacity)
+        assertEquals(0.82f, storage.settings.mainUiOpacity)
+        storage.failSave = false
+        model.setMainUiOpacity(0.45f)
+        assertEquals(0.82f, repository.state.value.settings.mainUiOpacity)
+        runCurrent()
+        assertEquals(0.45f, repository.state.value.settings.mainUiOpacity)
+        assertEquals(0.45f, storage.settings.mainUiOpacity)
+    }
+
+    @Test fun opacitySetterClampsBoundsAndRejectsNonFiniteValues() = modelTest { model ->
+        runCurrent()
+        model.setMainUiOpacity(-1f)
+        runCurrent()
+        assertEquals(0f, repository.state.value.settings.mainUiOpacity)
+        model.setMainUiOpacity(2f)
+        runCurrent()
+        assertEquals(1f, repository.state.value.settings.mainUiOpacity)
+        val error = async { model.events.first() }
+        model.setMainUiOpacity(Float.NaN)
+        runCurrent()
+        assertEquals("不透明度应为有效数值", error.await())
+        assertEquals(1f, repository.state.value.settings.mainUiOpacity)
     }
 
     private class MemoryStorage : TimetableStorage {

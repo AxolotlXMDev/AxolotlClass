@@ -142,7 +142,7 @@ fun TimetableScreen(
         snapshotFlow { pager.settledPage }.drop(1).distinctUntilChanged().collect { selectLatest(it + 1) }
     }
     Column(modifier.fillMaxSize().padding(horizontal = 3.dp)) {
-        Row(Modifier.fillMaxWidth().height(48.dp).background(colors.surface.copy(alpha = 0.84f), RoundedCornerShape(12.dp)),
+        Row(Modifier.fillMaxWidth().height(48.dp).background(colors.surface.copy(alpha = state.settings.mainUiOpacity), RoundedCornerShape(12.dp)),
             verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { weekendOverride = !weekendsExpanded }, contentPadding = PaddingValues(4.dp),
                 modifier = Modifier.width(52.dp).testTag("toggle-weekend")) {
@@ -173,7 +173,7 @@ private fun WeekGrid(state: AppState, week: Int, today: LocalDate, start: LocalD
     val fontScale = LocalDensity.current.fontScale
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().height(60.dp).padding(vertical = 3.dp)
-            .background(colors.surface.copy(alpha = 0.82f), RoundedCornerShape(10.dp))) {
+            .background(colors.surface.copy(alpha = state.settings.mainUiOpacity), RoundedCornerShape(10.dp))) {
             Box(Modifier.width(38.dp).fillMaxHeight(), contentAlignment = Alignment.Center) {
                 Text("${dateOf(start, week, 1).monthValue}\n月", fontSize = 11.sp, lineHeight = 14.sp,
                     color = colors.onSurfaceVariant, textAlign = TextAlign.Center)
@@ -201,7 +201,7 @@ private fun WeekGrid(state: AppState, week: Int, today: LocalDate, start: LocalD
             val labelScale = (rowHeight.value / 48f).coerceAtMost(1f) / fontScale.coerceAtLeast(1f)
             Row(Modifier.fillMaxSize()) {
                 Column(Modifier.width(38.dp).fillMaxHeight()
-                    .background(colors.surface.copy(alpha = 0.78f), RoundedCornerShape(8.dp))) {
+                    .background(colors.surface.copy(alpha = state.settings.mainUiOpacity), RoundedCornerShape(8.dp))) {
                     for (index in 0 until periodCount) {
                         val period = state.settings.periods.getOrNull(index)
                         Column(Modifier.height(rowHeight).fillMaxWidth().testTag("period-$week-${index + 1}")
@@ -290,9 +290,11 @@ private fun CourseCard(block: CourseBlock, appearance: CourseAppearance, height:
         Text(title, fontSize = textSize.sp, lineHeight = (textSize * 1.25f).sp,
             fontWeight = FontWeight.SemiBold, color = ink,
             maxLines = if (block.end > block.start) 5 else 2, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f))
-        Text(block.courses.first().location.ifBlank { "地点待定" }, fontSize = (9f / scale).sp,
-            lineHeight = (11f / scale).sp, color = ink.copy(alpha = 0.85f), maxLines = if (height.value > 75) 2 else 1,
-            overflow = TextOverflow.Ellipsis)
+            modifier = Modifier.weight(1f, fill = false).testTag("course-title"))
+        Spacer(Modifier.height(2.dp))
+        Text(block.courses.first().location.ifBlank { "地点待定" }, fontSize = (10f / scale).sp,
+            lineHeight = (12f / scale).sp, color = ink, fontWeight = FontWeight.Medium,
+            maxLines = if (height.value > 75) 2 else 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.testTag("course-location"))
     }
 }

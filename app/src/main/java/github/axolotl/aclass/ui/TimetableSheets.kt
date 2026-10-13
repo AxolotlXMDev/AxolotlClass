@@ -30,12 +30,13 @@ fun WeekPicker(state: AppState, selected: Int, current: Int, start: LocalDate, p
     val courses = remember(state.snapshot, state.settings.hiddenWeekendCourses) { visibleCourses(state) }
     val gridState = rememberLazyGridState(initialFirstVisibleItemIndex = ((selected - 1) / 3) * 3)
     val colors = MaterialTheme.colorScheme
+    val groupCount = (periodCount + 1) / 2
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("选择周次", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
             TextButton(onClick = { onSelect(current.coerceIn(1, maxWeek)) }) { Text("回到本周") }
         }
-        Text("圆点按星期 × 节次排列，有课的位置着色", style = MaterialTheme.typography.bodySmall,
+        Text("圆点按星期 × 两节一组排列（1–2、3–4…），组内有课即着色", style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp), color = colors.onSurfaceVariant)
         if (current < 1 || current > maxWeek) Text(if (current < 1) "尚未开学" else "学期已结束",
             style = MaterialTheme.typography.labelMedium, color = colors.primary, modifier = Modifier.padding(horizontal = 20.dp))
@@ -44,7 +45,7 @@ fun WeekPicker(state: AppState, selected: Int, current: Int, start: LocalDate, p
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items((1..maxWeek).toList(), key = { it }) { week ->
                 val weekCourses = remember(courses, week) { courses.filter { week in it.weeks } }
-                val slots = remember(weekCourses) { weekCourses.flatMap { course -> course.periods.map { course.day to it } }.toSet() }
+                val slots = remember(weekCourses, periodCount) { pairedPeriodSlots(weekCourses, week, periodCount) }
                 Column(Modifier.fillMaxWidth().background(if (week == selected) colors.primaryContainer else colors.surfaceContainer,
                     RoundedCornerShape(12.dp)).border(if (week == selected) 2.dp else 0.dp,
                     if (week == selected) colors.primary else Color.Transparent, RoundedCornerShape(12.dp))
@@ -54,13 +55,13 @@ fun WeekPicker(state: AppState, selected: Int, current: Int, start: LocalDate, p
                     Text("第${week}周${if (week == current) " · 本周" else ""}", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                     Text("${dateOf(start, week, 1).format(DateTimeFormatter.ofPattern("M/d"))} 起", style = MaterialTheme.typography.labelSmall,
                         color = colors.onSurfaceVariant)
-                    Canvas(Modifier.fillMaxWidth().height((periodCount * 8).coerceIn(72, 150).dp).padding(vertical = 6.dp)) {
+                    Canvas(Modifier.fillMaxWidth().height((groupCount * 12).coerceIn(60, 150).dp).padding(vertical = 6.dp)) {
                         val dx = size.width / 7
-                        val dy = size.height / periodCount
+                        val dy = size.height / groupCount
                         val radius = minOf(dx, dy) * 0.28f
-                        for (day in 1..7) for (period in 1..periodCount) {
-                            drawCircle(if (day to period in slots) colors.primary else colors.outlineVariant.copy(alpha = 0.6f),
-                                radius, Offset((day - 0.5f) * dx, (period - 0.5f) * dy))
+                        for (day in 1..7) for (group in 1..groupCount) {
+                            drawCircle(if (day to group in slots) colors.primary else colors.outlineVariant.copy(alpha = 0.6f),
+                                radius, Offset((day - 0.5f) * dx, (group - 0.5f) * dy))
                         }
                     }
                     Text("${weekCourses.size} 次课", style = MaterialTheme.typography.labelSmall)

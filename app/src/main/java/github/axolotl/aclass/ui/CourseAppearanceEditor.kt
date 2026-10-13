@@ -63,7 +63,8 @@ internal fun CourseAppearanceForm(
             .padding(14.dp).testTag("appearance-preview"), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(listOf(emoji, course.name).filter(String::isNotBlank).joinToString(" "),
                 fontWeight = FontWeight.SemiBold, color = ink)
-            Text(course.location.ifBlank { "地点待定" }, style = MaterialTheme.typography.bodySmall, color = ink.copy(alpha = 0.85f))
+            Text(course.location.ifBlank { "地点待定" }, style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium, color = ink)
         }
         COURSE_PALETTE.chunked(4).forEach { row ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {

@@ -46,6 +46,7 @@ object StorageCodec {
         }
         settings.backgroundPath?.let { put("backgroundPath", it) }
         put("backgroundTransparency", settings.backgroundTransparency)
+        put("mainUiOpacity", settings.mainUiOpacity)
         put("useDynamicColor", settings.useDynamicColor)
         put("customPrimaryColor", settings.customPrimaryColor)
         putJsonArray("hiddenWeekendCourses") { settings.hiddenWeekendCourses.sorted().forEach { add(it) } }
@@ -65,11 +66,16 @@ object StorageCodec {
             ?.takeIf { it.size in 9..99 && it.all(::validPeriodTime) }?.let {
                 if (it.size == 9) it + DEFAULT_PERIODS[9] else it
             } ?: DEFAULT_PERIODS
-        return AppSettings(dates, appearances, periods, root.text("backgroundPath").ifBlank { null },
-            root["backgroundTransparency"]?.jsonPrimitive?.float?.coerceIn(0f, 1f) ?: 0.25f,
-            root["useDynamicColor"]?.jsonPrimitive?.booleanOrNull ?: true,
-            root["customPrimaryColor"]?.jsonPrimitive?.longOrNull ?: 0xFF4E709BL,
-            root["hiddenWeekendCourses"]?.jsonArray?.map { it.jsonPrimitive.content }?.toSet().orEmpty())
+        return AppSettings(
+            termStarts = dates, appearances = appearances, periods = periods,
+            backgroundPath = root.text("backgroundPath").ifBlank { null },
+            backgroundTransparency = root["backgroundTransparency"]?.jsonPrimitive?.float?.coerceIn(0f, 1f) ?: 0.25f,
+            useDynamicColor = root["useDynamicColor"]?.jsonPrimitive?.booleanOrNull ?: true,
+            customPrimaryColor = root["customPrimaryColor"]?.jsonPrimitive?.longOrNull ?: 0xFF4E709BL,
+            hiddenWeekendCourses = root["hiddenWeekendCourses"]?.jsonArray?.map { it.jsonPrimitive.content }?.toSet().orEmpty(),
+            mainUiOpacity = (root["mainUiOpacity"] as? JsonPrimitive)?.floatOrNull
+                ?.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: DEFAULT_MAIN_UI_OPACITY,
+        )
     }
 
     fun encodeAccount(account: AccountSettings): String = buildJsonObject {

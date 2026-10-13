@@ -111,6 +111,12 @@ class TimetableViewModel(private val repository: TimetableRepository) : ViewMode
         null
     }
 
+    fun setMainUiOpacity(value: Float) = operation(showBusy = false) {
+        require(value.isFinite()) { "不透明度应为有效数值" }
+        repository.updateSettings { it.copy(mainUiOpacity = value.coerceIn(0f, 1f)) }
+        null
+    }
+
     fun setDynamicColor(enabled: Boolean) = operation(showBusy = false) {
         repository.updateSettings { it.copy(useDynamicColor = enabled) }
         null

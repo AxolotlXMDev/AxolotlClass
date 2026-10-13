@@ -46,6 +46,7 @@ fun SettingsScreen(state: AppState, today: LocalDate, working: Boolean, model: T
     val start = state.settings.termStart(state.snapshot, term)
     var startInput by rememberSaveable(start.toString()) { mutableStateOf(start.toString()) }
     var transparency by remember(state.settings.backgroundTransparency) { mutableFloatStateOf(state.settings.backgroundTransparency) }
+    var mainUiOpacity by remember(state.settings.mainUiOpacity) { mutableFloatStateOf(state.settings.mainUiOpacity) }
     var expanded by rememberSaveable { mutableStateOf(if (!state.loading && state.snapshot == null) "account" else "") }
     var initialized by rememberSaveable { mutableStateOf(!state.loading) }
     LaunchedEffect(state.loading) {
@@ -201,6 +202,13 @@ fun SettingsScreen(state: AppState, today: LocalDate, working: Boolean, model: T
                     Text("背景透明度 ${(transparency * 100).toInt()}%", style = MaterialTheme.typography.bodyMedium)
                     Slider(transparency, { transparency = it }, onValueChangeFinished = { model.setBackgroundTransparency(transparency) }, modifier = Modifier.testTag("background-transparency"))
                     Text("0% 完全显示图片，100% 隐藏图片", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    HorizontalDivider()
+                    Text("主界面不透明度 ${(mainUiOpacity * 100).toInt()}%", style = MaterialTheme.typography.bodyMedium)
+                    Slider(mainUiOpacity, { mainUiOpacity = it },
+                        onValueChangeFinished = { model.setMainUiOpacity(mainUiOpacity) },
+                        modifier = Modifier.testTag("main-ui-opacity"))
+                    Text("调节周次栏、星期日期栏和节次时间栏的底色。0% 完全透明，100% 完全不透明",
+                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
             }
         }

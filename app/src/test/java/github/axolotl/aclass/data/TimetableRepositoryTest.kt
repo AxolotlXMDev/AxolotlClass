@@ -116,13 +116,14 @@ class TimetableRepositoryTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val first = TimetableRepository(storage, successGateway(), dispatcher, clock)
         first.refresh()
-        first.updateSettings { it.copy(backgroundTransparency = 0.8f) }
+        first.updateSettings { it.copy(backgroundTransparency = 0.8f, mainUiOpacity = 0.45f) }
         first.close()
         val restarted = TimetableRepository(storage, successGateway(), dispatcher, clock)
         try {
             runCurrent()
             assertEquals(9000L, restarted.state.value.snapshot!!.updatedAt)
             assertEquals(0.8f, restarted.state.value.settings.backgroundTransparency)
+            assertEquals(0.45f, restarted.state.value.settings.mainUiOpacity)
             assertFalse(restarted.state.value.loading)
         } finally { restarted.close() }
     }
