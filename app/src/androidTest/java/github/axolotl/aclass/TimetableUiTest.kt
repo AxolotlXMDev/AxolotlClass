@@ -22,6 +22,8 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import java.time.Clock
+import java.time.Instant
 
 class TimetableUiTest {
     @get:Rule val compose = createComposeRule()
@@ -33,7 +35,7 @@ class TimetableUiTest {
     private val generatedFiles = mutableListOf<File>()
 
     private fun launch(snapshot: TimetableSnapshot?, compactLight: Boolean = false,
-                       darkMode: Boolean? = null, settings: AppSettings = AppSettings()) {
+                       darkMode: Boolean? = null, settings: AppSettings = AppSettings(), clock: Clock = schoolClock()) {
         val storage = UiStorage(snapshot)
         storage.settings = settings
         this.storage = storage
@@ -41,7 +43,7 @@ class TimetableUiTest {
             override suspend fun fetch(account: AccountSettings): List<CourseRecord> = error("离线测试")
         })
         repository = repo
-        val model = TimetableViewModel(repo)
+        val model = TimetableViewModel(repo, clock)
         this.model = model
         modelStore.put("test", model)
         restoration.setContent {
@@ -114,7 +116,7 @@ class TimetableUiTest {
         expandSection("appearance")
         compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("appearance-code:计算机网络"))
         compose.onNodeWithTag("appearance-code:计算机网络").performClick()
-        compose.onNodeWithText("emoji（留空即清除）").performTextInput("🌐")
+        compose.onNodeWithTag("appearance-emoji").performScrollTo().performTextInput("🌐")
         compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
         compose.waitUntil(5000) { repository!!.state.value.settings.appearances.values.any { it.emoji == "🌐" } }
         assertEquals("🌐", repository!!.state.value.settings.appearances.values.single().emoji)
@@ -223,7 +225,7 @@ class TimetableUiTest {
         }))
         launch(original.copy(courses = listOf(course, other)))
         compose.onNodeWithTag("course-${course.id}-1").performClick()
-        compose.onNodeWithTag("appearance-hex").performScrollTo().performTextReplacement("#18304A")
+        chooseHex("#18304A")
         compose.onNodeWithTag("appearance-emoji").performScrollTo().performTextReplacement("🧑‍💻")
         compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
         compose.waitUntil(5000) { repository!!.state.value.settings.appearances.values.any { it.emoji == "🧑‍💻" } }
@@ -247,11 +249,14 @@ class TimetableUiTest {
         launch(sampleSnapshot())
         val course = repository!!.state.value.snapshot!!.courses.first()
         compose.onNodeWithTag("course-${course.id}-1").performClick()
+        compose.onNodeWithTag("open-course-color").performScrollTo().performClick()
+        screenshot("circle-color-picker")
         compose.onNodeWithTag("appearance-hex").performScrollTo().performTextReplacement("invalid")
-        compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
+        compose.onNodeWithTag("confirm-course-color").performClick()
         compose.onNodeWithText("请输入6位十六进制颜色").performScrollTo().assertIsDisplayed()
         assertTrue(storage!!.settings.appearances.isEmpty())
         compose.onNodeWithTag("appearance-hex").performScrollTo().performTextReplacement("AABBCC")
+        compose.onNodeWithTag("confirm-course-color").performClick()
         compose.onNodeWithTag("appearance-emoji").performScrollTo().performTextReplacement("🌐")
         storage!!.failSettingsSave = true
         compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
@@ -308,6 +313,144 @@ class TimetableUiTest {
         screenshot("compact-editor-keyboard")
     }
 
+    @Test fun circularPickerSupportsCancelPresetsBrightnessHexAndRestoration() {
+        val original = sampleSnapshot()
+        val course = original.courses.single()
+        launch(original, compactLight = true)
+        compose.onNodeWithTag("course-${course.id}-1").performClick()
+        compose.onNodeWithTag("open-course-color").performScrollTo().performClick()
+        compose.onNodeWithTag("course-color-wheel").performTouchInput { swipe(center, centerRight) }
+        compose.onNodeWithTag("course-color-brightness").performScrollTo()
+            .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.SetProgress) { it(0.4f) }
+        compose.onNodeWithTag("appearance-color-15684432").performScrollTo().performClick() // EF5350
+        compose.onNodeWithTag("cancel-course-color").performClick()
+        compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
+        compose.waitUntil(5000) { storage!!.settings.appearances.isNotEmpty() }
+        assertEquals(AppSettings().appearance(original, course), storage!!.settings.appearance(original, course))
+        compose.onNodeWithTag("open-course-color").performScrollTo().performClick()
+        compose.onNodeWithTag("appearance-hex").performScrollTo().performTextReplacement("123456")
+        compose.onNodeWithTag("confirm-course-color").assertIsDisplayed()
+        compose.onNodeWithTag("cancel-course-color").assertIsDisplayed()
+        screenshot("compact-circle-picker-hex")
+        restoration.emulateSavedInstanceStateRestore()
+        compose.onNodeWithTag("appearance-hex").performScrollTo().assertTextContains("123456")
+        compose.onNodeWithTag("confirm-course-color").performClick()
+        compose.onNodeWithTag("appearance-emoji").performScrollTo().performTextReplacement("🧑‍💻")
+        compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
+        compose.waitUntil(5000) { storage!!.settings.appearance(original, course).color == 0xFF123456L }
+        screenshot("compact-circle-picker-saved")
+    }
+
+    @Test fun settingsCourseEditorSharesTheColorPicker() {
+        val original = sampleSnapshot()
+        val course = original.courses.single()
+        launch(original)
+        compose.onNodeWithTag("open-settings").performClick()
+        expandSection("appearance")
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("appearance-${course.courseKey}"))
+        compose.onNodeWithTag("appearance-${course.courseKey}").performClick()
+        chooseHex("18304A")
+        compose.onNodeWithTag("appearance-emoji").performScrollTo().performTextReplacement("📚")
+        compose.onNodeWithTag("save-appearance").performScrollTo().performClick()
+        compose.waitUntil(5000) { storage!!.settings.appearance(original, course) == CourseAppearance(0xFF18304AL, "📚") }
+        compose.onNodeWithTag("appearance-form").assertDoesNotExist()
+    }
+
+    @Test fun detailsShowChineseMetadataAndKeepExtraInformationCollapsed() {
+        val original = sampleSnapshot()
+        val course = TimetableParser.fromRaw(JsonObject(original.courses.single().raw.toMutableMap().apply {
+            put("zxs", JsonPrimitive(1)); put("xs", JsonPrimitive(4)); put("xf", JsonPrimitive("2.5"))
+            put("jxhjmc", JsonPrimitive("实践教学")); put("sknrjj", JsonPrimitive("实验内容简介"))
+            put("jxcddm", JsonPrimitive("隐藏的场地代码"))
+        }))
+        launch(original.copy(courses = listOf(course)))
+        compose.onNodeWithTag("course-${course.id}-1").performClick()
+        compose.onNodeWithText("总学时").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("本次学时").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("学分").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("上课日期").assertDoesNotExist()
+        compose.onNodeWithText("考试形式").assertDoesNotExist()
+        compose.onNodeWithTag("course-more-information").performScrollTo().performClick()
+        compose.onNodeWithText("实践教学").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("授课内容简介").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("隐藏的场地代码").assertDoesNotExist()
+    }
+
+    @Test fun nextCourseHintLocatesFutureWeekAndExpandsHiddenWeekendColumns() {
+        val course = TimetableParser.fromRaw(JsonObject(rawCourse("下周实验", "0102").toMutableMap().apply {
+            put("xq", JsonPrimitive(6)); put("zc", JsonPrimitive("2"))
+        }))
+        val snapshot = sampleSnapshot().copy(courses = listOf(course))
+        val settings = AppSettings(termStarts = mapOf(snapshot.scopeKey to "2026-10-12"))
+        launch(snapshot, settings = settings, clock = Clock.fixed(Instant.parse("2026-10-12T00:00:00Z"), SCHOOL_ZONE))
+        compose.onNodeWithTag("week-title").assertTextContains("第 1 周", substring = true)
+        compose.onNodeWithTag("next-course-hint").assertContentDescriptionContains("下周实验", substring = true)
+        compose.onNodeWithTag("next-course-hint").performClick()
+        compose.onNodeWithTag("week-title").assertTextContains("第 2 周", substring = true)
+        compose.onNodeWithTag("day-header-6").assertIsDisplayed()
+        compose.onNodeWithTag("course-${course.id}-1").assert(
+            SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "下一节课程"))
+        compose.onNodeWithTag("toggle-weekend").performClick()
+        compose.onNodeWithTag("day-header-6").assertDoesNotExist()
+        compose.onNodeWithTag("next-course-hint").performClick()
+        compose.onNodeWithTag("day-header-6").assertIsDisplayed()
+        screenshot("next-course-weekend")
+    }
+
+    @Test fun highlightSettingPersistsAndImmediatelyChangesTarget() {
+        val course = TimetableParser.fromRaw(JsonObject(rawCourse("已开始课程", "0102").toMutableMap().apply {
+            put("xq", JsonPrimitive(1)); put("zc", JsonPrimitive("1"))
+        }))
+        val snapshot = sampleSnapshot().copy(courses = listOf(course))
+        launch(snapshot, settings = AppSettings(termStarts = mapOf(snapshot.scopeKey to "2026-10-12")),
+            clock = Clock.fixed(Instant.parse("2026-10-12T00:05:00Z"), SCHOOL_ZONE))
+        compose.onNodeWithTag("next-course-hint").assertContentDescriptionContains("已开始", substring = true)
+        compose.onNodeWithTag("open-settings").performClick()
+        expandSection("schedule")
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("highlight-minutes"))
+        compose.onNodeWithTag("highlight-minutes").performTextReplacement("0")
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("save-highlight-minutes"))
+        compose.onNodeWithTag("save-highlight-minutes").performClick()
+        compose.waitUntil(5000) { storage!!.settings.highlightMinutes == 0 }
+        compose.onNodeWithTag("close-settings").performClick()
+        compose.onNodeWithTag("next-course-hint").assertDoesNotExist()
+        compose.onNodeWithTag("open-settings").performClick()
+        expandSection("schedule")
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("highlight-minutes"))
+        compose.onNodeWithTag("highlight-minutes").assertTextContains("0")
+    }
+
+    @Test fun clockDeadlineAdvancesHighlightWithoutChangingBrowsedWeek() {
+        fun mondayCourse(name: String, periods: String) = TimetableParser.fromRaw(JsonObject(rawCourse(name, periods).toMutableMap().apply {
+            put("xq", JsonPrimitive(1)); put("zc", JsonPrimitive("1"))
+        }))
+        val first = mondayCourse("早课", "0102")
+        val later = mondayCourse("下一堂", "0304")
+        val snapshot = sampleSnapshot().copy(courses = listOf(first, later))
+        val clock = UiClock(Instant.parse("2026-10-12T00:09:59Z"))
+        launch(snapshot, settings = AppSettings(termStarts = mapOf(snapshot.scopeKey to "2026-10-12")), clock = clock)
+        compose.onNodeWithTag("course-${first.id}-1").assert(
+            SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "已开始，当前高亮课程"))
+        compose.runOnIdle { model!!.selectWeek(2) }
+        compose.onNodeWithTag("week-title").assertTextContains("第 2 周", substring = true)
+        compose.runOnIdle {
+            clock.value = Instant.parse("2026-10-12T00:10:00Z")
+            model!!.onForeground()
+        }
+        compose.onNodeWithTag("next-course-hint").assertContentDescriptionContains("下一堂", substring = true)
+        compose.onNodeWithTag("week-title").assertTextContains("第 2 周", substring = true)
+        compose.onNodeWithTag("next-course-hint").performClick()
+        compose.onNodeWithTag("week-title").assertTextContains("第 1 周", substring = true)
+        compose.onNodeWithTag("course-${later.id}-3").assert(
+            SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "下一节课程"))
+    }
+
+    private class UiClock(var value: Instant) : Clock() {
+        override fun getZone(): java.time.ZoneId = SCHOOL_ZONE
+        override fun withZone(zone: java.time.ZoneId): Clock = Clock.fixed(value, zone)
+        override fun instant(): Instant = value
+    }
+
     @Test fun lightWallpaperKeepsFiveColumnGridAndTodayReadable() { wallpaperScenario(dark = false, weekends = false) }
     @Test fun darkWallpaperKeepsSevenColumnGridAndTodayReadable() { wallpaperScenario(dark = true, weekends = true) }
 
@@ -361,7 +504,7 @@ class TimetableUiTest {
         compose.runOnIdle { model!!.setBackgroundTransparency(0.6f) }
         compose.waitUntil(5000) { repository!!.state.value.settings.backgroundTransparency == 0.6f }
         compose.runOnIdle { model!!.removeBackground() }
-        compose.waitUntil(5000) { repository!!.state.value.settings.backgroundPath == null }
+        compose.waitUntil(5000) { repository!!.state.value.settings.backgroundPath == null && !model!!.working.value }
         assertFalse(imported.exists())
         source.delete()
     }
@@ -430,6 +573,12 @@ class TimetableUiTest {
     private fun expandSection(id: String) {
         compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("section-$id"))
         compose.onNodeWithTag("section-$id").performClick()
+    }
+
+    private fun chooseHex(hex: String) {
+        compose.onNodeWithTag("open-course-color").performScrollTo().performClick()
+        compose.onNodeWithTag("appearance-hex").performScrollTo().performTextReplacement(hex)
+        compose.onNodeWithTag("confirm-course-color").performClick()
     }
 
     private fun hasTestTagPrefix(prefix: String) = SemanticsMatcher("test tag starts with $prefix") {

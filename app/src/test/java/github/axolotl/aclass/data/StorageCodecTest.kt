@@ -20,7 +20,7 @@ class StorageCodecTest {
             appearances = mapOf("key" to CourseAppearance(0xFFAEDCCCL, "🧑‍💻")),
             periods = DEFAULT_PERIODS + PeriodTime("20:35", "21:20"), backgroundPath = "/private/background.png", backgroundTransparency = 0.6f,
             useDynamicColor = false, customPrimaryColor = 0xFF427E89L, hiddenWeekendCourses = setOf("student:202601:code:test"),
-            mainUiOpacity = 0.45f)
+            mainUiOpacity = 0.45f, highlightMinutes = 25)
         assertEquals(settings, StorageCodec.decodeSettings(StorageCodec.encodeSettings(settings)))
     }
 
@@ -30,6 +30,19 @@ class StorageCodecTest {
         val legacy = JsonObject(TimetableParser.json.parseToJsonElement(StorageCodec.encodeSettings(original)).jsonObject - "mainUiOpacity")
         assertEquals(original, StorageCodec.decodeSettings(legacy.toString()))
         assertEquals(0.82f, StorageCodec.decodeSettings("{\"version\":1}").mainUiOpacity)
+    }
+
+    @Test fun highlightMinutesDefaultsAndInvalidValuesKeepOtherSettings() {
+        listOf("null", "-1", "61", "2.5", "\"bad\"", "{}", "[]").forEach { value ->
+            val settings = StorageCodec.decodeSettings("{\"version\":1,\"highlightMinutes\":$value,\"mainUiOpacity\":0.45}")
+            assertEquals(10, settings.highlightMinutes)
+            assertEquals(0.45f, settings.mainUiOpacity)
+        }
+        assertEquals(10, StorageCodec.decodeSettings("{\"version\":1}").highlightMinutes)
+        listOf(0, 10, 60).forEach { minutes ->
+            val settings = AppSettings(highlightMinutes = minutes)
+            assertEquals(settings, StorageCodec.decodeSettings(StorageCodec.encodeSettings(settings)))
+        }
     }
 
     @Test fun opacityBoundsAndInvalidValuesDoNotDiscardSettings() {

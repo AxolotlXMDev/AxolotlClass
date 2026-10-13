@@ -45,6 +45,7 @@ fun SettingsScreen(state: AppState, today: LocalDate, working: Boolean, model: T
     var passwordVisible by remember { mutableStateOf(false) }
     val start = state.settings.termStart(state.snapshot, term)
     var startInput by rememberSaveable(start.toString()) { mutableStateOf(start.toString()) }
+    var highlightInput by rememberSaveable(state.settings.highlightMinutes) { mutableStateOf(state.settings.highlightMinutes.toString()) }
     var transparency by remember(state.settings.backgroundTransparency) { mutableFloatStateOf(state.settings.backgroundTransparency) }
     var mainUiOpacity by remember(state.settings.mainUiOpacity) { mutableFloatStateOf(state.settings.mainUiOpacity) }
     var expanded by rememberSaveable { mutableStateOf(if (!state.loading && state.snapshot == null) "account" else "") }
@@ -56,7 +57,7 @@ fun SettingsScreen(state: AppState, today: LocalDate, working: Boolean, model: T
         }
     }
     var periodsOpen by remember { mutableStateOf(false) }
-    var appearanceSelection by remember { mutableStateOf<AppearanceSelection?>(null) }
+    var appearanceSelection by rememberSaveable(stateSaver = appearanceSelectionSaver) { mutableStateOf<AppearanceSelection?>(null) }
     var themeEditorOpen by remember { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) model.importBackground(context.applicationContext, uri)
@@ -119,6 +120,13 @@ fun SettingsScreen(state: AppState, today: LocalDate, working: Boolean, model: T
                     OutlinedButton(onClick = { periodsOpen = true }, modifier = Modifier.fillMaxWidth().testTag("edit-periods")) {
                         Text("编辑节次时间 · ${visiblePeriodCount(state)}节")
                     }
+                    HorizontalDivider()
+                    OutlinedTextField(highlightInput, { highlightInput = it }, label = { Text("开课后继续高亮（分钟）") },
+                        supportingText = { Text("0～60 分钟；到达截止时间后高亮下一节课") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth().testTag("highlight-minutes"))
+                    OutlinedButton(onClick = { model.setHighlightMinutes(highlightInput) }, enabled = !working,
+                        modifier = Modifier.testTag("save-highlight-minutes")) { Text("保存高亮时长") }
                 }
             }
             item("appearance-header") {

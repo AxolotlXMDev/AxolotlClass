@@ -41,6 +41,7 @@ data class AccountSettings(val studentId: String, val password: String, val term
 data class PeriodTime(val start: String = "", val end: String = "")
 data class CourseAppearance(val color: Long, val emoji: String = "")
 const val DEFAULT_MAIN_UI_OPACITY = 0.82f
+const val DEFAULT_HIGHLIGHT_MINUTES = 10
 
 data class AppSettings(
     val termStarts: Map<String, String> = emptyMap(),
@@ -52,6 +53,7 @@ data class AppSettings(
     val customPrimaryColor: Long = 0xFF4E709BL,
     val hiddenWeekendCourses: Set<String> = emptySet(),
     val mainUiOpacity: Float = DEFAULT_MAIN_UI_OPACITY,
+    val highlightMinutes: Int = DEFAULT_HIGHLIGHT_MINUTES,
 ) {
     fun termStart(snapshot: TimetableSnapshot?, fallbackTerm: String): LocalDate =
         termStarts[snapshot?.scopeKey ?: ":$fallbackTerm"]?.let(LocalDate::parse)
@@ -85,6 +87,12 @@ val COURSE_PALETTE = listOf(
     0xFFADC9F2L, 0xFFAEDCCC, 0xFFF2CAADL, 0xFFC8BBE8L,
     0xFFEFB8CCL, 0xFFA7D4E0L, 0xFFECD89EL, 0xFFC3DCABL,
     0xFFB8BFE9L, 0xFFE2C4ADL, 0xFFC6D1DDL, 0xFFE1BDE1L,
+)
+// Separate from automatic assignment: adding choices must not recolor existing courses.
+val COURSE_COLOR_PRESETS = COURSE_PALETTE + listOf(
+    0xFFEF5350L, 0xFFFF9800L, 0xFFFFD54FL, 0xFF66BB6AL,
+    0xFF26A69AL, 0xFF29B6F6L, 0xFF5C6BC0L, 0xFFAB47BCL,
+    0xFF18304AL, 0xFF455A64L, 0xFF212121L, 0xFFFFFFFFL,
 )
 
 fun defaultTerm(today: LocalDate): String {

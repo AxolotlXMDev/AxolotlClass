@@ -23,4 +23,5 @@ class MainActivity : ComponentActivity() {
         setContent { TimetableApp(model) }
     }
     override fun onStart() { super.onStart(); model.onForeground() }
+    override fun onStop() { model.onBackground(); super.onStop() }
 }

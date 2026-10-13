@@ -47,6 +47,7 @@ object StorageCodec {
         settings.backgroundPath?.let { put("backgroundPath", it) }
         put("backgroundTransparency", settings.backgroundTransparency)
         put("mainUiOpacity", settings.mainUiOpacity)
+        put("highlightMinutes", settings.highlightMinutes)
         put("useDynamicColor", settings.useDynamicColor)
         put("customPrimaryColor", settings.customPrimaryColor)
         putJsonArray("hiddenWeekendCourses") { settings.hiddenWeekendCourses.sorted().forEach { add(it) } }
@@ -75,6 +76,8 @@ object StorageCodec {
             hiddenWeekendCourses = root["hiddenWeekendCourses"]?.jsonArray?.map { it.jsonPrimitive.content }?.toSet().orEmpty(),
             mainUiOpacity = (root["mainUiOpacity"] as? JsonPrimitive)?.floatOrNull
                 ?.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: DEFAULT_MAIN_UI_OPACITY,
+            highlightMinutes = (root["highlightMinutes"] as? JsonPrimitive)?.intOrNull
+                ?.takeIf { it in 0..60 } ?: DEFAULT_HIGHLIGHT_MINUTES,
         )
     }
 

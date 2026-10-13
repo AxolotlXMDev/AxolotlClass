@@ -13,31 +13,41 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import java.io.File
 import java.time.DayOfWeek
+import java.time.Clock
 import java.time.LocalDate
-import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 
-class TimetableViewModel(private val repository: TimetableRepository) : ViewModel() {
+class TimetableViewModel(private val repository: TimetableRepository, private val clock: Clock = schoolClock()) : ViewModel() {
     val state = repository.state
     val selectedWeek = MutableStateFlow<Int?>(null)
-    val today = MutableStateFlow(LocalDate.now(SCHOOL_ZONE))
+    val now = MutableStateFlow(clock.instant())
+    val today = MutableStateFlow(now.value.atZone(SCHOOL_ZONE).toLocalDate())
     private val messages = Channel<String>(Channel.BUFFERED)
     val events = messages.receiveAsFlow()
     val working = MutableStateFlow(false)
 
-    init {
-        viewModelScope.launch {
+    private var clockJob: Job? = null
+
+    private fun updateTime() {
+        now.value = clock.instant()
+        today.value = now.value.atZone(SCHOOL_ZONE).toLocalDate()
+    }
+
+    fun onForeground() {
+        updateTime()
+        if (clockJob?.isActive == true) return
+        clockJob = viewModelScope.launch {
             while (isActive) {
-                today.value = LocalDate.now(SCHOOL_ZONE)
-                val now = ZonedDateTime.now(SCHOOL_ZONE)
-                val midnight = now.toLocalDate().plusDays(1).atStartOfDay(SCHOOL_ZONE)
-                delay(ChronoUnit.MILLIS.between(now, midnight).coerceAtLeast(1000))
+                val current = clock.instant()
+                val nextMinute = current.truncatedTo(ChronoUnit.MINUTES).plusSeconds(60)
+                delay(ChronoUnit.MILLIS.between(current, nextMinute).coerceAtLeast(1))
+                updateTime()
             }
         }
     }
 
-    fun onForeground() { today.value = LocalDate.now(SCHOOL_ZONE) }
+    fun onBackground() { clockJob?.cancel(); clockJob = null }
     fun selectWeek(week: Int) { selectedWeek.value = week }
     fun currentWeek() { selectedWeek.value = null; onForeground() }
 
@@ -81,6 +91,13 @@ class TimetableViewModel(private val repository: TimetableRepository) : ViewMode
         require(periods.size in 10..99 && periods.all(::validPeriodTime)) { "时间应为 HH:mm，结束时间应晚于开始时间；未知时间可同时留空" }
         repository.updateSettings { it.copy(periods = periods) }
         "节次时间已保存"
+    }
+
+    fun setHighlightMinutes(value: String) = operation {
+        val minutes = value.trim().toIntOrNull()
+        require(minutes != null && minutes in 0..60) { "请输入 0～60 的整数分钟" }
+        repository.updateSettings { it.copy(highlightMinutes = minutes) }
+        "高亮时长已保存"
     }
 
     fun saveAppearance(scopeKey: String, course: CourseRecord, appearance: CourseAppearance,

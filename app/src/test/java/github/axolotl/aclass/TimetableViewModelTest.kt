@@ -12,6 +12,10 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import java.io.IOException
+import java.time.Clock
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class TimetableViewModelTest {
@@ -23,11 +27,11 @@ class TimetableViewModelTest {
     @Before fun setUp() { Dispatchers.setMain(dispatcher) }
     @After fun tearDown() { store.clear(); if (::repository.isInitialized) repository.close(); Dispatchers.resetMain() }
 
-    private fun createModel(): TimetableViewModel {
+    private fun createModel(clock: Clock = schoolClock()): TimetableViewModel {
         repository = TimetableRepository(storage, object : SchoolGateway {
             override suspend fun fetch(account: AccountSettings) = testSnapshot().courses
         }, dispatcher)
-        return TimetableViewModel(repository).also { store.put("model", it) }
+        return TimetableViewModel(repository, clock).also { store.put("model", it) }
     }
 
     private fun modelTest(block: suspend TestScope.(TimetableViewModel) -> Unit) = runTest(dispatcher) {
@@ -117,6 +121,61 @@ class TimetableViewModelTest {
         runCurrent()
         assertEquals("不透明度应为有效数值", error.await())
         assertEquals(1f, repository.state.value.settings.mainUiOpacity)
+    }
+
+    @Test fun foregroundClockTicksAtMinuteBoundaryAndStopsInBackground() = runTest(dispatcher) {
+        val clock = MutableClock(Instant.parse("2026-10-12T00:09:30Z"))
+        val model = createModel(clock)
+        runCurrent()
+        model.onForeground()
+        model.onForeground() // repeated foreground events must not create duplicate tickers
+        runCurrent()
+        clock.value = Instant.parse("2026-10-12T00:10:00Z")
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals(clock.value, model.now.value)
+        model.onBackground()
+        clock.value = Instant.parse("2026-10-12T16:00:00Z")
+        advanceTimeBy(60_000)
+        runCurrent()
+        assertEquals(Instant.parse("2026-10-12T00:10:00Z"), model.now.value)
+        model.onForeground()
+        assertEquals(clock.value, model.now.value)
+        assertEquals(LocalDate.of(2026, 10, 13), model.today.value)
+        store.clear()
+        repository.close()
+    }
+
+    @Test fun highlightMinutesValidatePersistAndKeepOldValueOnFailure() = modelTest { model ->
+        runCurrent()
+        val saved = async { model.events.first() }
+        model.setHighlightMinutes("25")
+        runCurrent()
+        assertEquals("高亮时长已保存", saved.await())
+        assertEquals(25, storage.settings.highlightMinutes)
+        storage.failSave = true
+        val failed = async { model.events.first() }
+        model.setHighlightMinutes("30")
+        runCurrent()
+        assertEquals("磁盘写入失败", failed.await())
+        assertEquals(25, repository.state.value.settings.highlightMinutes)
+        storage.failSave = false
+        val retried = async { model.events.first() }
+        model.setHighlightMinutes("0")
+        runCurrent()
+        assertEquals("高亮时长已保存", retried.await())
+        assertEquals(0, storage.settings.highlightMinutes)
+        val invalid = async { model.events.first() }
+        model.setHighlightMinutes("61")
+        runCurrent()
+        assertEquals("请输入 0～60 的整数分钟", invalid.await())
+        assertEquals(0, repository.state.value.settings.highlightMinutes)
+    }
+
+    private class MutableClock(var value: Instant) : Clock() {
+        override fun getZone(): ZoneId = SCHOOL_ZONE
+        override fun withZone(zone: ZoneId): Clock = Clock.fixed(value, zone)
+        override fun instant(): Instant = value
     }
 
     private class MemoryStorage : TimetableStorage {
